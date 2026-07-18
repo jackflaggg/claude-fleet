@@ -37,6 +37,33 @@ function projectFromCwd(cwd) {
   return segments[segments.length - 1] || 'unknown';
 }
 
+/** bundle-id приложения-терминала -> человекочитаемое имя для метки на карточке. */
+const TERMINAL_NAMES = {
+  'com.jetbrains.WebStorm': 'WebStorm',
+  'com.jetbrains.intellij': 'IntelliJ',
+  'com.jetbrains.pycharm': 'PyCharm',
+  'com.jetbrains.PhpStorm': 'PhpStorm',
+  'com.jetbrains.goland': 'GoLand',
+  'com.jetbrains.rubymine': 'RubyMine',
+  'com.jetbrains.CLion': 'CLion',
+  'com.jetbrains.datagrip': 'DataGrip',
+  'com.jetbrains.rider': 'Rider',
+  'org.alacritty': 'Alacritty',
+  'io.alacritty': 'Alacritty',
+  'com.googlecode.iterm2': 'iTerm',
+  'com.apple.Terminal': 'Terminal',
+  'dev.warp.Warp-Stable': 'Warp',
+  'net.kovidgoyal.kitty': 'kitty',
+  'com.github.wez.wezterm': 'WezTerm',
+  'com.mitchellh.ghostty': 'Ghostty',
+};
+
+function terminalName(appId) {
+  if (typeof appId !== 'string' || !appId) return '';
+  if (TERMINAL_NAMES[appId]) return TERMINAL_NAMES[appId];
+  return appId.split('.').pop() || '';
+}
+
 /** Последние 2 сегмента пути, чтобы было понятно что за файл, но не занимало всю карточку. */
 function shortPath(p) {
   if (typeof p !== 'string' || !p) return '';
@@ -115,6 +142,7 @@ export function applyEvent(sessions, event, now) {
     project: projectFromCwd(event.cwd),
     cwd: typeof event.cwd === 'string' ? event.cwd : '',
     appId: null,
+    terminal: null,
     title: '',
     tool: null,
     toolInfo: null,
@@ -127,8 +155,11 @@ export function applyEvent(sessions, event, now) {
     card.cwd = event.cwd;
     card.project = projectFromCwd(event.cwd);
   }
-  // bundle-id приложения-терминала, где живёт сессия (для решения "куда вернуть по клику").
-  if (typeof event.appId === 'string' && event.appId) card.appId = event.appId;
+  // bundle-id приложения-терминала, где живёт сессия (для клика + метки на карточке).
+  if (typeof event.appId === 'string' && event.appId) {
+    card.appId = event.appId;
+    card.terminal = terminalName(event.appId);
+  }
 
   switch (eventName) {
     case 'SessionStart':

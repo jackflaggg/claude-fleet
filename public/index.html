@@ -190,6 +190,9 @@
 
     .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--faint); }
     .src { opacity: .7; letter-spacing: .3px; }
+    .term { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--dim);
+      background: rgba(255,255,255,.045); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
+    .term::before { content: ""; width: 7px; height: 6px; border: 1px solid currentColor; border-radius: 1.5px; opacity: .85; }
 
     .empty { color: var(--dim); text-align: center; margin-top: 14vh; font-size: 15px; }
     .empty small { display: block; margin-top: 9px; color: var(--faint); font-size: 12.5px; }
@@ -262,7 +265,7 @@
       ));
     }
     function sig(sessions) {
-      return sessions.map((c) => [c.sessionId, c.project, c.status, c.reason, c.title, c.tool, c.toolInfo].join('')).join('');
+      return sessions.map((c) => [c.sessionId, c.project, c.status, c.reason, c.title, c.tool, c.toolInfo, c.terminal].join('')).join('');
     }
     function badgeFor(c) {
       if (c.status === 'waiting') return { cls: 'waiting', label: WAIT_BADGE[c.reason] || 'ждёт тебя' };
@@ -294,7 +297,7 @@
         </div>
         ${titleHtml}
         ${toolHtml}
-        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relTime(c.updatedAt)}</span><span class="src">claude-code</span></div>
+        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relTime(c.updatedAt)}</span>${c.terminal ? `<span class="term">${esc(c.terminal)}</span>` : '<span class="src">claude-code</span>'}</div>
       </button>`;
     }
 

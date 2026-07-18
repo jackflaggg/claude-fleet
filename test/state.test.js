@@ -70,6 +70,15 @@ test('Stop - waiting/finished (закончил ход, нужен следую�
   assert.equal(state.s1.reason, WAIT_REASON.FINISHED);
 });
 
+test('terminal - человекочитаемое имя из appId (WebStorm / Alacritty / фолбэк)', () => {
+  const ws = applyEvent({}, ev({ hook_event_name: 'SessionStart', appId: 'com.jetbrains.WebStorm' }), NOW);
+  assert.equal(ws.s1.terminal, 'WebStorm');
+  const al = applyEvent({}, ev({ hook_event_name: 'SessionStart', appId: 'org.alacritty' }), NOW);
+  assert.equal(al.s1.terminal, 'Alacritty');
+  const unknown = applyEvent({}, ev({ hook_event_name: 'SessionStart', appId: 'com.foo.BarTerm' }), NOW);
+  assert.equal(unknown.s1.terminal, 'BarTerm');
+});
+
 test('appId (где живёт сессия) сохраняется и переживает следующие события', () => {
   let state = applyEvent({}, ev({ hook_event_name: 'SessionStart', appId: 'org.alacritty' }), NOW);
   assert.equal(state.s1.appId, 'org.alacritty');

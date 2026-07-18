@@ -61,6 +61,7 @@
 - **статус** (приблизительно из типа события, точной телеметрии у хуков нет): `ready` (SessionStart) · `thinking` (UserPromptSubmit) · `tool` (PreToolUse) · `working` (PostToolUse) · `error` (PostToolUse с ошибкой) · `waiting` (Notification / Stop).
 - **задача** - последний промпт (`title`, из `UserPromptSubmit`).
 - **активность "над чем сейчас"** - `tool` + `toolInfo` из `tool_input` (какой файл читает/правит, какую команду в Bash, паттерн Grep и т.п. - `toolTarget()` в `state.js`).
+- **где живёт** - метка терминала (`terminal`) из `appId` (`terminalName()` в `state.js`): WebStorm / Alacritty / iTerm / Terminal / ...
 
 `waiting` собирается в секцию "ждут тебя" (красное) с причиной для бейджа:
 - `finished` - Stop, закончил ход
