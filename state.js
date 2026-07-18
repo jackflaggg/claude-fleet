@@ -176,6 +176,10 @@ export function applyEvent(sessions, event, now) {
   };
 
   const card = { ...previous, updatedAt: now };
+  // момент, когда карточку впервые увидели; ставим один раз и не трогаем - для «идёт N мин».
+  // Проставляем здесь (а не в дефолте выше), чтобы карточки, поднятые с диска до появления
+  // поля, тоже получили его на ближайшем событии, а не остались навсегда без возраста.
+  if (!card.createdAt) card.createdAt = now;
   if (typeof event.cwd === 'string' && event.cwd) {
     card.cwd = event.cwd;
     card.project = projectFromCwd(event.cwd);

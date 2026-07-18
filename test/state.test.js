@@ -101,6 +101,20 @@ test('terminal - человекочитаемое имя из appId (WebStorm / 
   assert.equal(unknown.s1.terminal, 'BarTerm');
 });
 
+test('createdAt ставится при создании карточки и не обновляется дальше', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'SessionStart' }), NOW);
+  assert.equal(state.s1.createdAt, NOW);
+  state = applyEvent(state, ev({ hook_event_name: 'PreToolUse', tool_name: 'Bash' }), NOW + 5000);
+  assert.equal(state.s1.createdAt, NOW, 'момент старта неизменен');
+  assert.equal(state.s1.updatedAt, NOW + 5000, 'а updatedAt идёт за последним событием');
+});
+
+test('карточка без createdAt (поднятая с диска старого формата) получает его на событии', () => {
+  const restored = { s1: { sessionId: 's1', status: STATUS.WORKING, updatedAt: NOW - 1000 } };
+  const state = applyEvent(restored, ev({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: {} }), NOW);
+  assert.equal(state.s1.createdAt, NOW, 'проставлен на ближайшем событии, а не остался undefined');
+});
+
 test('appId (где живёт сессия) сохраняется и переживает следующие события', () => {
   let state = applyEvent({}, ev({ hook_event_name: 'SessionStart', appId: 'org.alacritty' }), NOW);
   assert.equal(state.s1.appId, 'org.alacritty');

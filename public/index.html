@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fleet</title>
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23090c11'/><circle cx='50' cy='50' r='9' fill='%2335d6c4'/><circle cx='50' cy='50' r='24' fill='none' stroke='%2335d6c4' stroke-width='4' opacity='.5'/><circle cx='50' cy='50' r='38' fill='none' stroke='%2335d6c4' stroke-width='3' opacity='.2'/></svg>" />
+  <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23090c11'/><circle cx='50' cy='50' r='9' fill='%2335d6c4'/><circle cx='50' cy='50' r='24' fill='none' stroke='%2335d6c4' stroke-width='4' opacity='.5'/><circle cx='50' cy='50' r='38' fill='none' stroke='%2335d6c4' stroke-width='3' opacity='.2'/></svg>" />
   <style>
     :root {
       --bg: #090c11;
@@ -19,6 +19,7 @@
       --border: #212a36;
       --border-hi: #3a4757;
       --radius: 14px;
+      --maxw: 1040px; /* потолок ширины контента: карточки не растекаются по всему экрану */
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; }
@@ -58,13 +59,14 @@
 
     header {
       position: sticky; top: 0; z-index: 10;
-      display: flex; align-items: center; gap: 15px;
       padding: 15px 26px;
       background: rgba(9,12,17,.66);
       backdrop-filter: saturate(150%) blur(14px);
       -webkit-backdrop-filter: saturate(150%) blur(14px);
       border-bottom: 1px solid var(--border);
     }
+    /* содержимое шапки центрируется по той же оси, что и карточки: лого встаёт над ними */
+    .hwrap { display: flex; align-items: center; gap: 15px; max-width: var(--maxw); margin: 0 auto; width: 100%; }
 
     /* сонар-логомарк: краснеет когда кто-то ждёт */
     .mark { position: relative; width: 24px; height: 24px; display: inline-grid; place-items: center; color: var(--cyan); flex: none; }
@@ -93,7 +95,7 @@
     .counts b { color: var(--text); font-weight: 700; }
     .counts .w { color: var(--red); font-weight: 600; }
 
-    main { padding: 10px 26px 70px; }
+    main { padding: 10px 26px 70px; max-width: var(--maxw); margin: 0 auto; }
     .sec { margin-top: 28px; }
     .sec:first-child { margin-top: 16px; }
     .sec-head {
@@ -163,6 +165,8 @@
     .pname { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
     .proj { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sid { font-size: 11px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; flex: none; }
+    .dur { font-size: 11px; color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
+    .dur::before { content: "·"; margin: 0 5px; opacity: .6; }
 
     .badge {
       flex: none; font-size: 11px; font-weight: 600; letter-spacing: .2px;
@@ -194,6 +198,14 @@
       background: rgba(255,255,255,.045); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
     .term::before { content: ""; width: 7px; height: 6px; border: 1px solid currentColor; border-radius: 1.5px; opacity: .85; }
 
+    /* «протухание»: активная карточка без событий дольше порога - вероятно сессия подвисла/закрыта */
+    .idle { display: none; align-items: center; gap: 5px; font-size: 10.5px; color: var(--amber); white-space: nowrap; }
+    .idle::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .8; }
+    .card.stale { opacity: .5; filter: saturate(.7); }
+    .card.stale::before { animation: none; background: var(--faint) !important; }
+    .card.stale .idle { display: inline-flex; }
+    .card.stale .term { display: none; }
+
     .empty { color: var(--dim); text-align: center; margin-top: 14vh; font-size: 15px; }
     .empty small { display: block; margin-top: 9px; color: var(--faint); font-size: 12.5px; }
 
@@ -220,10 +232,12 @@
     <div class="grain"></div>
   </div>
   <header>
-    <span class="mark" id="mark"><span class="core"></span></span>
-    <span class="word">Fleet</span>
-    <span class="live on" id="live"><span class="pulse"></span><span id="liveText">live</span></span>
-    <span class="counts" id="counts"></span>
+    <div class="hwrap">
+      <span class="mark" id="mark"><span class="core"></span></span>
+      <span class="word">Fleet</span>
+      <span class="live on" id="live"><span class="pulse"></span><span id="liveText">live</span></span>
+      <span class="counts" id="counts"></span>
+    </div>
   </header>
 
   <main>
@@ -259,6 +273,49 @@
       if (h < 24) return h + ' ч назад';
       return Math.floor(h / 24) + ' дн назад';
     }
+    // возраст сессии от createdAt: «идёт N …», чтобы отличать свежую от давно живущей
+    function durText(ts) {
+      if (!ts) return '';
+      const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      if (s < 60) return 'идёт ' + s + ' с';
+      const m = Math.floor(s / 60);
+      if (m < 60) return 'идёт ' + m + ' мин';
+      const h = Math.floor(m / 60);
+      if (h < 24) return 'идёт ' + h + ' ч';
+      return 'идёт ' + Math.floor(h / 24) + ' дн';
+    }
+
+    // активная карточка без событий дольше порога - вероятно сессия подвисла/закрыта (см. tickTimes)
+    const IDLE_MS = 4 * 60 * 1000;
+
+    // фавикон рисуем на canvas: сонар-точка + красный счётчик, когда кто-то ждёт.
+    // Так сигнал «ждут тебя» виден на иконке фоновой вкладки, а не только в её заголовке.
+    let lastFav = -1;
+    function updateFavicon(waiting) {
+      if (waiting === lastFav) return;
+      lastFav = waiting;
+      const s = 64, cv = document.createElement('canvas');
+      cv.width = s; cv.height = s;
+      const ctx = cv.getContext('2d');
+      if (!ctx) return;
+      const cx = s / 2, cy = s / 2, accent = waiting ? '#ff5d63' : '#35d6c4';
+      ctx.fillStyle = '#090c11';
+      if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(0, 0, s, s, 16); ctx.fill(); } else ctx.fillRect(0, 0, s, s);
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = 0.5; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cx, cy, 15, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 0.22; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, cy, 24, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = accent; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
+      if (waiting > 0) {
+        const bx = s - 17, by = 17;
+        ctx.fillStyle = '#ff3b41'; ctx.beginPath(); ctx.arc(bx, by, 16, 0, Math.PI * 2); ctx.fill();
+        ctx.lineWidth = 3; ctx.strokeStyle = '#090c11'; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.font = 'bold 22px -apple-system, BlinkMacSystemFont, sans-serif';
+        ctx.fillText(waiting > 9 ? '9+' : String(waiting), bx, by + 1);
+      }
+      try { document.getElementById('favicon').href = cv.toDataURL('image/png'); } catch {}
+    }
     function esc(v) {
       return String(v ?? '').replace(/[&<>"']/g, (c) => (
         { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
@@ -287,17 +344,19 @@
       const showTool = c.tool && (c.status === 'tool' || c.status === 'working' || c.status === 'error');
       const toolTxt = showTool ? esc(c.tool) + (c.toolInfo ? ' · ' + esc(c.toolInfo) : '') : '';
       const toolHtml = showTool ? `<div class="tool"><span class="d"></span>${toolTxt}</div>` : '';
+      const durHtml = c.createdAt ? `<span class="dur" data-created="${c.createdAt}">${durText(c.createdAt)}</span>` : '';
       let titleHtml = '';
       if (c.title) titleHtml = `<div class="title">${esc(c.title)}</div>`;
       else if (!showTool) titleHtml = `<div class="title muted">${esc(idleText(c))}</div>`;
+      const foot = c.terminal ? `<span class="term">${esc(c.terminal)}</span>` : '<span class="src">claude-code</span>';
       return `<button class="card s-${c.status}" data-id="${esc(c.sessionId)}" title="перейти к сессии (WebStorm или её терминал)">
         <div class="chead">
-          <span class="pname"><span class="proj">${esc(c.project)}</span><span class="sid">${sid}</span></span>
+          <span class="pname"><span class="proj">${esc(c.project)}</span><span class="sid">${sid}</span>${durHtml}</span>
           <span class="badge ${b.cls}">${b.label}</span>
         </div>
         ${titleHtml}
         ${toolHtml}
-        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relTime(c.updatedAt)}</span>${c.terminal ? `<span class="term">${esc(c.terminal)}</span>` : '<span class="src">claude-code</span>'}</div>
+        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relTime(c.updatedAt)}</span><span class="idle">нет активности</span>${foot}</div>
       </button>`;
     }
 
@@ -332,6 +391,7 @@
         (waiting.length ? ` · <span class="w">${waiting.length} ждут тебя</span>` : '');
       document.title = (waiting.length ? `(${waiting.length}) ` : '') + 'Fleet';
       document.getElementById('mark').classList.toggle('alert', waiting.length > 0);
+      updateFavicon(waiting.length);
     }
 
     function plural(n, one, few, many) {
@@ -350,8 +410,19 @@
         if (rel && ts != null) { rel.dataset.ts = ts; rel.textContent = relTime(ts); }
       }
     }
+    // раз в секунду двигаем время «на месте» (без ре-рендера) и подсвечиваем протухшие карточки
     function tickTimes() {
-      for (const el of board.querySelectorAll('.rel')) el.textContent = relTime(Number(el.dataset.ts));
+      const now = Date.now();
+      for (const el of board.querySelectorAll('.card')) {
+        const rel = el.querySelector('.rel');
+        if (rel) rel.textContent = relTime(Number(rel.dataset.ts));
+        const dur = el.querySelector('.dur');
+        if (dur) dur.textContent = durText(Number(dur.dataset.created));
+        // «нет активности» только для активных статусов - waiting/ready законно ждут человека
+        const busy = /\bs-(thinking|tool|working|error)\b/.test(el.className);
+        const ts = Number(rel && rel.dataset.ts) || 0;
+        el.classList.toggle('stale', busy && ts > 0 && now - ts > IDLE_MS);
+      }
     }
 
     let toastTimer = null;
