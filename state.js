@@ -31,6 +31,31 @@ function clip(value, limit = MAX_TITLE) {
   return trimmed.length > limit ? `${trimmed.slice(0, limit - 1)}…` : trimmed;
 }
 
+/**
+ * UserPromptSubmit прилетает не только на живой ввод человека, но и на системные инъекции
+ * Claude Code: уведомление о завершении фоновой задачи (`<task-notification>`), слэш-команды,
+ * ремайндеры, проброс вывода Bash. Такой текст не должен подменять реальную задачу пользователя
+ * в заголовке карточки (иначе на борде вместо промпта висит служебный XML).
+ */
+const SERVICE_PROMPT_TAGS = [
+  '<task-notification>',
+  '<system-reminder>',
+  '<command-name>',
+  '<command-message>',
+  '<command-args>',
+  '<local-command-stdout>',
+  '<local-command-stderr>',
+  '<bash-input>',
+  '<bash-stdout>',
+  '<bash-stderr>',
+];
+
+function isServicePrompt(text) {
+  if (typeof text !== 'string') return false;
+  const head = text.trimStart();
+  return SERVICE_PROMPT_TAGS.some((tag) => head.startsWith(tag));
+}
+
 function projectFromCwd(cwd) {
   if (typeof cwd !== 'string' || !cwd) return 'unknown';
   const segments = cwd.replace(/\/+$/, '').split('/');
@@ -106,10 +131,10 @@ function isToolError(toolResponse) {
 }
 
 function waitReasonFromNotification(event) {
+  // Различаем причину только по тексту уведомления: у события Notification нет поля matcher
+  // (matcher - это конфиг хука в settings.json, в payload он не приходит).
   const message = typeof event.message === 'string' ? event.message.toLowerCase() : '';
-  const matcher = typeof event.matcher === 'string' ? event.matcher.toLowerCase() : '';
   const isPermission =
-    matcher.includes('permission') ||
     message.includes('permission') ||
     message.includes('approve') ||
     message.includes('разреш');
@@ -175,7 +200,10 @@ export function applyEvent(sessions, event, now) {
       card.reason = null;
       {
         const prompt = event.prompt ?? event.user_prompt;
-        if (typeof prompt === 'string' && prompt.trim()) card.title = clip(prompt);
+        // Служебную инъекцию не пишем в заголовок - сохраняем прошлую реальную задачу.
+        if (typeof prompt === 'string' && prompt.trim() && !isServicePrompt(prompt)) {
+          card.title = clip(prompt);
+        }
       }
       break;
     case 'PreToolUse':
@@ -214,4 +242,20 @@ export function applyEvent(sessions, event, now) {
 /** Карточка в состоянии STATUS.WAITING считается требующей внимания. */
 export function isWaiting(card) {
   return card?.status === STATUS.WAITING;
+}
+
+/**
+ * Возвращает набор сессий без протухших - тех, что не обновлялись дольше staleMs.
+ * Нужна, потому что карточка удаляется по SessionEnd, а оно приходит только на аккуратный
+ * выход (/exit). При закрытии окна терминала, kill или крэше события нет, и зомби-карточка
+ * иначе висела бы на борде вечно. Чистая функция (время и порог - снаружи), вызывается
+ * по таймеру из server.js. Возвращает новый объект; если ничего не протухло - все прежние
+ * карточки на месте (сравнивай размеры на стороне вызова, чтобы не слать лишний broadcast).
+ */
+export function pruneStale(sessions, now, staleMs) {
+  const next = {};
+  for (const [id, card] of Object.entries(sessions)) {
+    if (now - (card?.updatedAt ?? 0) < staleMs) next[id] = card;
+  }
+  return next;
 }

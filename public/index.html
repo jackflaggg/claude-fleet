@@ -312,7 +312,9 @@
         html += `<div class="grid">${waiting.map(cardHtml).join('')}</div></div>`;
       }
       if (busy.length) {
-        const groups = {};
+        // Object.create(null): имя проекта - это имя папки, оно может совпасть с полем прототипа
+        // (constructor, toString, hasOwnProperty). На обычном {} это уронило бы рендер.
+        const groups = Object.create(null);
         for (const c of busy) (groups[c.project] ||= []).push(c);
         let inner = '';
         for (const name of Object.keys(groups).sort()) {
@@ -340,7 +342,7 @@
     }
 
     function syncTimestamps() {
-      const byId = {};
+      const byId = Object.create(null);
       for (const c of data.sessions || []) byId[c.sessionId] = c.updatedAt;
       for (const el of board.querySelectorAll('.card')) {
         const rel = el.querySelector('.rel');

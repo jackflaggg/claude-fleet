@@ -19,7 +19,7 @@ import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { applyEvent } from './state.js';
+import { applyEvent, pruneStale } from './state.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -98,7 +98,16 @@ function payload() {
 
 function broadcast() {
   const data = payload();
-  for (const client of sseClients) client.write(data);
+  for (const client of sseClients) {
+    // Клиент мог отвалиться в момент между записями (событие 'close' ещё не пришло) -
+    // запись в разрушённый поток кинет ошибку. Ловим и выкидываем клиента, чтобы одна
+    // мёртвая вкладка не срывала рассылку остальным.
+    try {
+      client.write(data);
+    } catch {
+      sseClients.delete(client);
+    }
+  }
 }
 
 async function readBody(req) {
@@ -108,8 +117,14 @@ async function readBody(req) {
 }
 
 async function handleEvent(req, res) {
-  const raw = await readBody(req);
-  res.writeHead(204).end();
+  let raw;
+  try {
+    raw = await readBody(req);
+  } catch {
+    // запрос оборвался на чтении тела - тихо выходим, ронять сервер незачем
+    return;
+  }
+  if (!res.writableEnded) res.writeHead(204).end();
 
   let event;
   try {
@@ -136,11 +151,20 @@ function handleStream(req, res) {
   res.write(payload());
   sseClients.add(res);
 
-  const heartbeat = setInterval(() => res.write(': ping\n\n'), 25_000);
-  req.on('close', () => {
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      // соединение уже мертво - уборку сделает 'close'/'error'
+    }
+  }, 25_000);
+  const cleanup = () => {
     clearInterval(heartbeat);
     sseClients.delete(res);
-  });
+  };
+  req.on('close', cleanup);
+  // без обработчика 'error' сбой SSE-сокета всплыл бы как необработанное исключение процесса
+  res.on('error', cleanup);
 }
 
 /**
@@ -194,7 +218,10 @@ async function handleIndex(res) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  if (req.method === 'POST' && url.pathname === '/event') return handleEvent(req, res);
+  if (req.method === 'POST' && url.pathname === '/event') {
+    handleEvent(req, res).catch(() => {});
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/stream') return handleStream(req, res);
 
   if (req.method === 'POST' && url.pathname.startsWith('/focus/')) {
@@ -208,6 +235,22 @@ const server = http.createServer((req, res) => {
 
   res.writeHead(404).end('not found');
 });
+
+/**
+ * Периодическая уборка зомби-карточек: сессий, чей терминал закрыли/убили без SessionEnd.
+ * Порог тот же STALE_MS, что и при восстановлении с диска. Активная сессия шлёт события хуков
+ * куда чаще, поэтому под нож попадают только реально мёртвые. .unref() - таймер не держит
+ * процесс живым сам по себе.
+ */
+const PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+setInterval(() => {
+  const pruned = pruneStale(sessions, Date.now(), STALE_MS);
+  if (Object.keys(pruned).length !== Object.keys(sessions).length) {
+    sessions = pruned;
+    broadcast();
+    persist();
+  }
+}, PRUNE_INTERVAL_MS).unref();
 
 server.listen(PORT, HOST, () => {
   process.stdout.write(`claude-fleet слушает http://${HOST}:${PORT}\n`);
