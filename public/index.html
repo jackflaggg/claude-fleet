@@ -118,12 +118,14 @@
        переносятся на след. ряд. Не растягиваем в 1fr (иначе редкие группы разъезжаются
        с дырами). Внутри одной колонки карточки встают друг под другом. */
     .groups { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: flex-start; }
-    .group { flex: 0 1 360px; max-width: 360px; min-width: 0; }
+    /* колонки растут поровну и заполняют ряд (в одном ряду ширина у всех одинаковая),
+       но не разрастаются в гигантов при 1-2 группах (max-width). */
+    .group { flex: 1 1 420px; max-width: 720px; min-width: 0; }
     .group .grid { display: flex; flex-direction: column; gap: 12px; }
 
     .card {
       position: relative; overflow: hidden;
-      display: block; width: 100%; text-align: left;
+      display: flex; flex-direction: column; width: 100%; min-height: 176px; text-align: left;
       background: linear-gradient(158deg, rgba(28,35,46,.9), rgba(17,22,30,.92));
       border: 1px solid var(--border);
       border-radius: var(--radius);
@@ -199,7 +201,8 @@
     }
     .tool .d { width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); }
 
-    .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--faint); }
+    /* margin-top:auto прижимает подвал вниз - карточки с min-height выглядят выровненными */
+    .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 11px; color: var(--faint); margin-top: auto; }
     .src { opacity: .7; letter-spacing: .3px; }
     .term { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--dim);
       background: rgba(255,255,255,.045); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
