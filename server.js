@@ -19,7 +19,8 @@ import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from 'n
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { applyEvent, pruneStale } from './state.js';
+import { applyEvent, pruneStale, isHandledEvent } from './state.js';
+import { resolveFocus } from './focus.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -143,8 +144,30 @@ function snapshot() {
   return Object.values(sessions).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
+/** Незнакомые типы событий: имя -> сколько раз пришло. Копится до рестарта, на диск не идёт. */
+const unknownEvents = new Map();
+/**
+ * Разных имён храним ограниченно, остальное сваливаем в одну строку. Иначе поток событий
+ * с уникальными именами (кривой хук, чужой софт на том же порту) раздувал бы Map без предела:
+ * на 3000 разных имён это стоило почти 7 МБ. Больше десятка типов всё равно не читаемо.
+ */
+const MAX_UNKNOWN_KINDS = 12;
+const MAX_UNKNOWN_NAME = 40;
+const OTHER_UNKNOWN = 'прочие';
+
+function noteUnknownEvent(rawName) {
+  const name = String(rawName).slice(0, MAX_UNKNOWN_NAME);
+  const known = unknownEvents.has(name);
+  const key = known || unknownEvents.size < MAX_UNKNOWN_KINDS ? name : OTHER_UNKNOWN;
+  const seen = unknownEvents.get(key) ?? 0;
+  unknownEvents.set(key, seen + 1);
+  // в лог пишем только первый раз, чтобы поток событий не забил fleet.log
+  if (seen === 0) log(`незнакомое событие хука: ${key} (борд его не понимает)`);
+}
+
 function payload() {
-  return `data: ${JSON.stringify({ sessions: snapshot() })}\n\n`;
+  const unknown = [...unknownEvents].map(([name, count]) => ({ name, count }));
+  return `data: ${JSON.stringify({ sessions: snapshot(), unknown })}\n\n`;
 }
 
 function broadcast() {
@@ -218,6 +241,10 @@ async function handleEvent(req, res) {
   const appHeader = req.headers['x-fleet-app'];
   if (typeof appHeader === 'string' && appHeader) event.appId = appHeader;
 
+  if (event?.hook_event_name && !isHandledEvent(event.hook_event_name)) {
+    noteUnknownEvent(event.hook_event_name);
+  }
+
   sessions = applyEvent(sessions, event, Date.now());
   broadcast();
   persist();
@@ -248,24 +275,9 @@ function handleStream(req, res) {
   res.on('error', cleanup);
 }
 
-/**
- * Куда вернуть по клику. Сессия живёт не обязательно в WebStorm - может быть Alacritty,
- * iTerm, Terminal (например `claude` из home). Открываем проект в WebStorm только если это
- * реальный проект (есть .idea) и терминал - WebStorm. Иначе просто выводим вперёд то
- * приложение-терминал, где сессия запущена. Так клик по home-сессии из Alacritty не пытается
- * открыть home как проект (иначе WebStorm показывает диалог доверия и падает).
- */
-function resolveFocus(card) {
-  const appId = typeof card.appId === 'string' ? card.appId : '';
-  const cwd = typeof card.cwd === 'string' ? card.cwd : '';
-  const isJetBrains = appId.startsWith('com.jetbrains.');
-  const isProject = Boolean(cwd) && existsSync(join(cwd, '.idea'));
-
-  if (isJetBrains && isProject && WEBSTORM_LAUNCHER) return { cmd: WEBSTORM_LAUNCHER, args: [cwd] };
-  if (appId && !isJetBrains) return { cmd: 'open', args: ['-b', appId] };
-  if (isJetBrains) return { cmd: 'open', args: ['-b', appId] };
-  if (isProject && WEBSTORM_LAUNCHER) return { cmd: WEBSTORM_LAUNCHER, args: [cwd] };
-  return null;
+/** Папка открыта как проект IDE - по .idea рядом. Единственный IO в решении о фокусе. */
+function isProjectDir(cwd) {
+  return existsSync(join(cwd, '.idea'));
 }
 
 function handleFocus(res, id) {
@@ -274,7 +286,11 @@ function handleFocus(res, id) {
     res.writeHead(404).end('нет такой сессии');
     return;
   }
-  const target = resolveFocus(card);
+  const target = resolveFocus(card, {
+    launcher: WEBSTORM_LAUNCHER,
+    app: WEBSTORM_APP,
+    isProjectDir,
+  });
   if (!target) {
     res.writeHead(204).end();
     return;

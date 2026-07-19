@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, pruneStale, STATUS, WAIT_REASON } from '../state.js';
+import { applyEvent, pruneStale, isHandledEvent, STATUS, WAIT_REASON } from '../state.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -183,6 +183,25 @@ test('иммутабельность: исходный объект не мут�
   const result = applyEvent(original, ev({ hook_event_name: 'SessionStart' }), NOW);
   assert.deepEqual(original, {});
   assert.notEqual(result, original);
+});
+
+test('isHandledEvent знает все события, которые обрабатывает applyEvent', () => {
+  for (const name of ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Notification', 'Stop', 'SubagentStop', 'SessionEnd']) {
+    assert.ok(isHandledEvent(name), `${name} должен считаться известным`);
+  }
+});
+
+test('незнакомое событие видно как незнакомое (сигнал, что схема хуков разъехалась)', () => {
+  assert.equal(isHandledEvent('PreCompact'), false);
+  assert.equal(isHandledEvent(undefined), false);
+});
+
+test('незнакомое событие не портит карточку, только освежает updatedAt', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }), NOW);
+  state = applyEvent(state, ev({ hook_event_name: 'ЧтоТоНовое' }), NOW + 500);
+  assert.equal(state.s1.status, STATUS.TOOL);
+  assert.equal(state.s1.tool, 'Bash');
+  assert.equal(state.s1.updatedAt, NOW + 500);
 });
 
 const HOUR = 60 * 60 * 1000;

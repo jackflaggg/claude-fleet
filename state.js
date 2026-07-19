@@ -22,6 +22,27 @@ export const WAIT_REASON = {
   QUESTION: 'question', // Claude ждёт твой ответ на вопрос (AskUserQuestion / план / простой)
 };
 
+/**
+ * События хука, которые борд понимает. Схема событий Claude Code не наша и может измениться
+ * с обновлением: появится новый тип или переименуется старый. Тогда карточки начнут молча
+ * врать (статус просто перестанет меняться), поэтому незнакомые имена считаем и показываем
+ * в шапке борда - чтобы это было видно сразу, а не через неделю недоумения.
+ */
+export const HANDLED_EVENTS = new Set([
+  'SessionStart',
+  'UserPromptSubmit',
+  'PreToolUse',
+  'PostToolUse',
+  'Notification',
+  'Stop',
+  'SubagentStop',
+  'SessionEnd',
+]);
+
+export function isHandledEvent(name) {
+  return HANDLED_EVENTS.has(name);
+}
+
 const MAX_TITLE = 300;
 const MAX_TOOL_INFO = 70;
 const MAX_NOTE = 120;
