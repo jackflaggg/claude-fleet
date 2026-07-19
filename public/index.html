@@ -91,6 +91,18 @@
     .live.off .pulse { background: var(--faint); }
     @keyframes livePulse { 0%,100% { box-shadow: 0 0 0 0 rgba(71,201,122,.5); } 50% { box-shadow: 0 0 0 5px rgba(71,201,122,0); } }
 
+    /* тумблер системных уведомлений: по умолчанию выключен, звука нет никогда.
+       Нужен для случая "сижу в фуллскрине IDE" - борда не видно, даже favicon-бейджа. */
+    .bell {
+      display: inline-grid; place-items: center; width: 26px; height: 26px; padding: 0;
+      background: transparent; border: 1px solid var(--border); border-radius: 7px;
+      color: var(--faint); cursor: pointer; transition: color .15s, border-color .15s;
+    }
+    .bell:hover { color: var(--dim); border-color: var(--border-hi); }
+    .bell.on { color: var(--cyan); border-color: rgba(53,214,196,.4); }
+    .bell.on .slash { display: none; }
+    .bell:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
     /* борд встретил событие хука, которого не знает - вероятно, обновился Claude Code
        и схема разъехалась. Тихо игнорировать нельзя: карточки начнут молча врать. */
     .unknown {
@@ -98,7 +110,9 @@
       background: rgba(255,180,84,.1); border: 1px solid rgba(255,180,84,.3);
       border-radius: 20px; padding: 2px 10px; cursor: help;
     }
-    .unknown + .counts { margin-left: 14px; }
+    /* :not([hidden]) обязателен: скрытый бейдж остаётся соседом в DOM, и без этого
+       правило перебивало margin-left:auto у счётчика, сдвигая его от правого края */
+    .unknown:not([hidden]) + .counts { margin-left: 14px; }
 
     .counts { margin-left: auto; font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; }
     .counts b { color: var(--text); font-weight: 700; }
@@ -280,6 +294,13 @@
       <span class="mark" id="mark"><span class="core"></span></span>
       <span class="word">Fleet</span>
       <span class="live on" id="live"><span class="pulse"></span><span id="liveText">live</span></span>
+      <button class="bell off" id="bell" type="button" aria-pressed="false" title="Уведомления выключены">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+          <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>
+          <line class="slash" x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+      </button>
       <span class="unknown" id="unknown" hidden></span>
       <span class="counts" id="counts"></span>
     </div>
@@ -316,6 +337,8 @@
     const empty = document.getElementById('empty');
     let data = { sessions: [] };
     let lastSig = '';
+    let lastLayout = '';
+    const slots = new Map();
 
     function relTime(ts) {
       if (!ts) return '';
@@ -427,8 +450,7 @@
       const badgeHtml = c.status === 'waiting'
         ? `<span class="badge ${b.cls}">${b.label} · <span class="wt" data-ts="${c.updatedAt || 0}">${waitText(c.updatedAt)}</span></span>`
         : `<span class="badge ${b.cls}">${b.label}</span>`;
-      return `<div class="card s-${c.status}" role="button" tabindex="0" data-id="${esc(c.sessionId)}" title="перейти к сессии (WebStorm или её терминал)">
-        <button class="kill" data-kill="${esc(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
+      return `<button class="kill" data-kill="${esc(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
         <div class="chead">
           <span class="pname"><span class="proj">${esc(c.project)}</span><span class="sid">${sid}</span>${durHtml}</span>
           ${badgeHtml}
@@ -436,8 +458,49 @@
         ${titleHtml}
         ${noteHtml}
         ${toolHtml}
-        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relTime(c.updatedAt)}</span><span class="idle">нет активности</span>${foot}</div>
-      </div>`;
+        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relTime(c.updatedAt)}</span><span class="idle">нет активности</span>${foot}</div>`;
+    }
+
+    /* Карточки живут между рендерами: элемент .card создаётся один раз на сессию и дальше
+       только переставляется и обновляется внутри. Иначе пересоздание DOM под курсором гасит
+       :hover (а кнопка удаления показывается именно по ховеру), сбрасывает фокус клавиатуры
+       и способно увести клик мимо цели - при активной работе борд перерисовывается несколько
+       раз в секунду. */
+    const cardEls = new Map();
+
+    function cardSig(c) {
+      return [c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.project, c.createdAt].join('');
+    }
+
+    function cardEl(c) {
+      let entry = cardEls.get(c.sessionId);
+      if (!entry) {
+        const el = document.createElement('div');
+        el.className = `card s-${c.status}`;
+        el.setAttribute('role', 'button');
+        el.tabIndex = 0;
+        el.dataset.id = c.sessionId;
+        el.title = 'перейти к сессии (WebStorm или её терминал)';
+        entry = { el, sig: null };
+        cardEls.set(c.sessionId, entry);
+      }
+      const sig = cardSig(c);
+      if (sig !== entry.sig) {
+        entry.sig = sig;
+        // класс протухания ставит tickTimes, при смене статуса его нужно сохранить
+        const stale = entry.el.classList.contains('stale') ? ' stale' : '';
+        entry.el.className = `card s-${c.status}${stale}`;
+        entry.el.innerHTML = cardHtml(c);
+      }
+      return entry.el;
+    }
+
+    /** Карточки исчезнувших сессий выкидываем, иначе Map растёт до перезагрузки страницы. */
+    function forgetGoneCards(list) {
+      const alive = new Set(list.map((c) => c.sessionId));
+      for (const id of cardEls.keys()) {
+        if (!alive.has(id)) cardEls.delete(id);
+      }
     }
 
     function render() {
@@ -447,25 +510,53 @@
       const waiting = list.filter((c) => c.status === 'waiting').sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
       const busy = list.filter((c) => c.status !== 'waiting');
 
-      let html = '';
-      if (waiting.length) {
-        html += `<div class="sec"><div class="sec-head attn"><span class="ping"></span>Ждут тебя<span class="cnt">${waiting.length}</span></div>`;
-        html += `<div class="grid">${waiting.map(cardHtml).join('')}</div></div>`;
+      // Object.create(null): имя проекта - это имя папки, оно может совпасть с полем прототипа
+      // (constructor, toString, hasOwnProperty). На обычном {} это уронило бы рендер.
+      const groups = Object.create(null);
+      for (const c of busy) (groups[c.project] ||= []).push(c);
+      const groupNames = Object.keys(groups).sort();
+      for (const name of groupNames) {
+        groups[name].sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId)));
       }
-      if (busy.length) {
-        // Object.create(null): имя проекта - это имя папки, оно может совпасть с полем прототипа
-        // (constructor, toString, hasOwnProperty). На обычном {} это уронило бы рендер.
-        const groups = Object.create(null);
-        for (const c of busy) (groups[c.project] ||= []).push(c);
-        let inner = '';
-        for (const name of Object.keys(groups).sort()) {
-          const cards = groups[name].sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId)));
-          inner += `<div class="group"><div class="group-head">${esc(name)}<span class="cnt">${cards.length}</span></div>`;
-          inner += `<div class="grid">${cards.map(cardHtml).join('')}</div></div>`;
+
+      // скелет перестраиваем, только если изменилась сама раскладка (состав секций, групп
+      // и порядок карточек в них), а не при каждом обновлении статуса
+      const layout = JSON.stringify([
+        waiting.map((c) => c.sessionId),
+        groupNames.map((name) => [name, groups[name].map((c) => c.sessionId)]),
+      ]);
+      if (layout !== lastLayout) {
+        lastLayout = layout;
+        let html = '';
+        if (waiting.length) {
+          html += `<div class="sec"><div class="sec-head attn"><span class="ping"></span>Ждут тебя<span class="cnt">${waiting.length}</span></div>`;
+          html += '<div class="grid" data-slot="waiting"></div></div>';
         }
-        html += `<div class="sec"><div class="sec-head">В работе</div><div class="groups">${inner}</div></div>`;
+        if (busy.length) {
+          let inner = '';
+          for (const name of groupNames) {
+            inner += `<div class="group"><div class="group-head">${esc(name)}<span class="cnt">${groups[name].length}</span></div>`;
+            inner += `<div class="grid" data-slot="g:${esc(name)}"></div></div>`;
+          }
+          html += `<div class="sec"><div class="sec-head">В работе</div><div class="groups">${inner}</div></div>`;
+        }
+        board.innerHTML = html;
+        // ключи берём из dataset (браузер уже декодировал атрибут) - так имя проекта
+        // не нужно экранировать второй раз, теперь уже под CSS-селектор
+        slots.clear();
+        for (const el of board.querySelectorAll('[data-slot]')) slots.set(el.dataset.slot, el);
       }
-      board.innerHTML = html;
+
+      // карточки раскладываем по слотам: существующие элементы переезжают, а не пересоздаются
+      if (waiting.length) {
+        const slot = slots.get('waiting');
+        if (slot) for (const c of waiting) slot.append(cardEl(c));
+      }
+      for (const name of groupNames) {
+        const slot = slots.get(`g:${name}`);
+        if (slot) for (const c of groups[name]) slot.append(cardEl(c));
+      }
+      forgetGoneCards(list);
       empty.hidden = list.length > 0;
 
       document.getElementById('counts').innerHTML =
@@ -474,6 +565,7 @@
       document.title = (waiting.length ? `(${waiting.length}) ` : '') + 'Fleet';
       document.getElementById('mark').classList.toggle('alert', waiting.length > 0);
       updateFavicon(waiting.length);
+      notifyAboutWaiting(waiting);
     }
 
     // событий, которых борд не понимает, в норме нет: если появились - обновился Claude Code
@@ -522,6 +614,62 @@
         const busy = /\bs-(thinking|tool|working|error)\b/.test(el.className);
         const ts = Number(rel && rel.dataset.ts) || 0;
         el.classList.toggle('stale', busy && ts > 0 && now - ts > IDLE_MS);
+      }
+    }
+
+    /* Системные уведомления. Выключены по умолчанию и всегда беззвучные: борд задумывался
+       как тихий сигнал. Нужны ровно для одного случая - когда борд не на виду (фуллскрин IDE),
+       и даже красный favicon на фоновой вкладке не помогает. Уведомляем только о НОВЫХ
+       ожидающих сессиях, а не о каждом обновлении, иначе это превратится в спам. */
+    const NOTIFY_KEY = 'fleet-notify';
+    let notifyOn = localStorage.getItem(NOTIFY_KEY) === '1';
+    let knownWaiting = new Set();
+    let firstSnapshot = true;
+
+    function syncBell() {
+      const bell = document.getElementById('bell');
+      bell.classList.toggle('on', notifyOn);
+      bell.classList.toggle('off', !notifyOn);
+      bell.setAttribute('aria-pressed', String(notifyOn));
+      bell.title = notifyOn
+        ? 'Уведомления включены (без звука, только о новых ожидающих)'
+        : 'Уведомления выключены';
+    }
+
+    async function toggleNotify() {
+      if (notifyOn) {
+        notifyOn = false;
+      } else {
+        if (!('Notification' in window)) { toast('Браузер не умеет системные уведомления'); return; }
+        let permission = Notification.permission;
+        if (permission === 'default') permission = await Notification.requestPermission();
+        if (permission !== 'granted') { toast('Уведомления запрещены в настройках браузера'); return; }
+        notifyOn = true;
+      }
+      localStorage.setItem(NOTIFY_KEY, notifyOn ? '1' : '0');
+      syncBell();
+    }
+
+    function notifyAboutWaiting(waiting) {
+      const fresh = waiting.filter((c) => !knownWaiting.has(c.sessionId));
+      knownWaiting = new Set(waiting.map((c) => c.sessionId));
+      // первый снапшот после открытия борда - это не новые события, а просто текущее положение
+      if (firstSnapshot) { firstSnapshot = false; return; }
+      if (!notifyOn || !fresh.length || Notification.permission !== 'granted') return;
+
+      const one = fresh.length === 1 ? fresh[0] : null;
+      const title = one ? `${one.project} ${WAIT_BADGE[one.reason] || 'ждёт тебя'}` : `${fresh.length} сессии ждут тебя`;
+      const body = one ? (one.note || (one.tool ? `${one.tool}${one.toolInfo ? ' · ' + one.toolInfo : ''}` : one.title || '')) : fresh.map((c) => c.project).join(', ');
+      try {
+        // tag: новое уведомление заменяет предыдущее, а не копится стопкой в центре уведомлений
+        const note = new Notification(title, { body, tag: 'fleet-waiting', silent: true });
+        note.onclick = () => {
+          window.focus();
+          if (one) focusSession(one.sessionId);
+          note.close();
+        };
+      } catch {
+        // уведомления могли отключить на уровне системы уже после выдачи разрешения
       }
     }
 
@@ -597,6 +745,8 @@
       es.onerror = () => setLive(false);
     }
 
+    document.getElementById('bell').addEventListener('click', toggleNotify);
+    syncBell();
     connect();
     setInterval(tickTimes, 1000);
   </script>
