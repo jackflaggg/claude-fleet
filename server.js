@@ -15,7 +15,7 @@
 import http from 'node:http';
 import os from 'node:os';
 import { readFile } from 'node:fs/promises';
-import { readFileSync, writeFileSync, statSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -39,6 +39,52 @@ const HOST = process.env.FLEET_HOST || '127.0.0.1';
 const INDEX_FILE = join(ROOT, 'public', 'index.html');
 const STATE_FILE = join(ROOT, '.fleet-state.json');
 const STALE_MS = (Number(process.env.FLEET_STALE_HOURS) || 6) * 60 * 60 * 1000;
+
+/** Событие крупнее этого отбрасываем целиком: JSON нельзя распарсить по кусочку. */
+const MAX_BODY = 1024 * 1024;
+/** А это уже не наш хук, а чей-то поток без конца - рвём соединение, не дочитывая. */
+const HARD_BODY_LIMIT = 32 * 1024 * 1024;
+
+/** Лог в fleet.log со временем: без него в логе стопка одинаковых строк без понимания, когда. */
+function log(message) {
+  process.stdout.write(`${new Date().toLocaleString('ru-RU')}  ${message}\n`);
+}
+
+/**
+ * Защита от DNS rebinding. Браузер обязан слать Host, и при ребайнде там будет чужой домен
+ * (evil.com), а не localhost - хотя пакет придёт на 127.0.0.1. Без этой проверки любая
+ * открытая вкладка может прочитать /stream, а там все промпты, пути проектов и команды Bash.
+ * Свои хосты (посмотреть борд с планшета) добавляются через FLEET_ALLOWED_HOSTS.
+ */
+const ALLOWED_HOSTS = new Set([
+  `${HOST}:${PORT}`,
+  `localhost:${PORT}`,
+  `127.0.0.1:${PORT}`,
+  `[::1]:${PORT}`,
+  ...(process.env.FLEET_ALLOWED_HOSTS || '')
+    .split(',')
+    .map((h) => h.trim())
+    .filter(Boolean),
+]);
+
+function isAllowedHost(req) {
+  const host = req.headers.host;
+  return typeof host === 'string' && ALLOWED_HOSTS.has(host);
+}
+
+const ALLOWED_ORIGINS = new Set([`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
+
+/**
+ * Отсекает запросы, инициированные чужой страницей. Host-проверка ловит rebinding, но не
+ * обычный CSRF: сайт может честно постить на http://127.0.0.1:4319 и Host будет верным.
+ * report.sh ходит через curl - у него нет ни Sec-Fetch-Site, ни Origin, поэтому он проходит.
+ */
+function isCrossSite(req) {
+  const site = req.headers['sec-fetch-site'];
+  if (typeof site === 'string' && site !== 'same-origin' && site !== 'none') return true;
+  const origin = req.headers.origin;
+  return typeof origin === 'string' && origin !== '' && !ALLOWED_ORIGINS.has(origin);
+}
 
 /**
  * Лаунчер WebStorm и имя приложения берём из .env, не хардкодим в коде: путь установки
@@ -81,7 +127,12 @@ function persist() {
   saveTimer = setTimeout(() => {
     saveTimer = null;
     try {
-      writeFileSync(STATE_FILE, JSON.stringify(sessions));
+      // Пишем через временный файл + rename (атомарная операция в пределах ФС): иначе
+      // падение ровно в момент записи оставит обрезанный JSON, а loadState молча вернёт {}
+      // и все живые карточки исчезнут разом.
+      const tmp = `${STATE_FILE}.tmp`;
+      writeFileSync(tmp, JSON.stringify(sessions));
+      renameSync(tmp, STATE_FILE);
     } catch {
       // персист не критичен, борд работает и без него
     }
@@ -112,16 +163,46 @@ function broadcast() {
 
 async function readBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let size = 0;
+  let overflow = false;
+  for await (const chunk of req) {
+    size += chunk.length;
+    // Событие с содержимым большого файла в tool_response может весить сотни КБ.
+    // Сверх лимита в память не копим, но поток дочитываем: оборвать его - значит
+    // разрушить сокет, и отправитель не получит внятный ответ, а просто увидит обрыв.
+    if (size > MAX_BODY) {
+      overflow = true;
+      if (size > HARD_BODY_LIMIT) {
+        req.destroy();
+        break;
+      }
+      continue;
+    }
+    chunks.push(chunk);
+  }
+  if (overflow) throw new Error(`тело события ${size} байт при лимите ${MAX_BODY}`);
   return Buffer.concat(chunks).toString('utf8');
 }
 
 async function handleEvent(req, res) {
+  // Отказываем по заявленному размеру, не начиная читать: обрыв уже начатого чтения
+  // разрушает сокет, и код ответа до клиента не доходит.
+  const declared = Number(req.headers['content-length'] || 0);
+  if (declared > MAX_BODY) {
+    log(`событие отброшено: заявлено ${declared} байт, лимит ${MAX_BODY}`);
+    res.writeHead(413).end();
+    req.destroy();
+    return;
+  }
+
   let raw;
   try {
     raw = await readBody(req);
-  } catch {
-    // запрос оборвался на чтении тела - тихо выходим, ронять сервер незачем
+  } catch (error) {
+    // запрос оборвался или тело не влезло в лимит - роняем событие, но не процесс.
+    // Пишем в лог: иначе карточка молча залипнет на прошлом статусе и это не объяснить.
+    log(`событие отброшено: ${error.message}`);
+    if (!res.writableEnded) res.writeHead(413).end();
     return;
   }
   if (!res.writableEnded) res.writeHead(204).end();
@@ -206,6 +287,22 @@ function handleFocus(res, id) {
   }
 }
 
+/**
+ * Убрать карточку руками. Нужно для зомби: SessionEnd приходит только на аккуратный /exit,
+ * а после закрытия окна терминала карточка иначе висит до срабатывания pruneStale (часы).
+ */
+function handleDelete(res, id) {
+  if (!sessions[id]) {
+    res.writeHead(404).end('нет такой сессии');
+    return;
+  }
+  const { [id]: removed, ...rest } = sessions;
+  sessions = rest;
+  broadcast();
+  persist();
+  res.writeHead(204).end();
+}
+
 async function handleIndex(res) {
   try {
     const html = await readFile(INDEX_FILE);
@@ -218,6 +315,15 @@ async function handleIndex(res) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
+  if (!isAllowedHost(req)) {
+    res.writeHead(403).end('чужой Host');
+    return;
+  }
+  if (req.method !== 'GET' && isCrossSite(req)) {
+    res.writeHead(403).end('запрос с чужой страницы');
+    return;
+  }
+
   if (req.method === 'POST' && url.pathname === '/event') {
     handleEvent(req, res).catch(() => {});
     return;
@@ -227,6 +333,11 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && url.pathname.startsWith('/focus/')) {
     const id = decodeURIComponent(url.pathname.slice('/focus/'.length));
     return handleFocus(res, id);
+  }
+
+  if (req.method === 'DELETE' && url.pathname.startsWith('/session/')) {
+    const id = decodeURIComponent(url.pathname.slice('/session/'.length));
+    return handleDelete(res, id);
   }
 
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
@@ -252,6 +363,17 @@ setInterval(() => {
   }
 }, PRUNE_INTERVAL_MS).unref();
 
+// Без своего обработчика ошибка listen всплывает необработанным исключением, launchd
+// поднимает процесс заново - и так по кругу, а в логе только стопка стартовых строк.
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    log(`порт ${PORT} уже занят - борд уже запущен? (lsof -i :${PORT})`);
+  } else {
+    log(`сервер не поднялся: ${error.message}`);
+  }
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
-  process.stdout.write(`claude-fleet слушает http://${HOST}:${PORT}\n`);
+  log(`claude-fleet слушает http://${HOST}:${PORT}`);
 });
