@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Локальный дашборд статусов всех сессий Claude Code, питается хуками",
   "type": "module",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "start": "node server.js",
