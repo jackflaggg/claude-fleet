@@ -7,11 +7,21 @@
 # Папку проекта вычисляем от расположения скрипта (не хардкодим путь).
 # Порт берём из того же .env, что и сервер, чтобы хук и сервер всегда совпадали.
 # Приоритет: переменная окружения FLEET_PORT -> значение из .env -> 4319.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
+# Всё до curl делаем средствами самого bash, без единого подпроцесса: скрипт висит на каждом
+# вызове тула во всех сессиях, и прежние `$(cd .. && pwd)` + grep|tail|cut|tr стоили пяти
+# лишних форков на ровном месте.
+HOOK_DIR="${BASH_SOURCE[0]%/*}"
+ENV_FILE="${HOOK_DIR%/*}/.env"
 PORT="${FLEET_PORT:-}"
-if [ -z "$PORT" ] && [ -f "$ENV_FILE" ]; then
-  PORT="$(grep -E '^FLEET_PORT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d '=' -f2 | tr -d '[:space:]"')"
+if [ -z "$PORT" ] && [ -r "$ENV_FILE" ]; then
+  while IFS='=' read -r key value || [ -n "$key" ]; do
+    if [ "$key" = "FLEET_PORT" ]; then
+      value="${value%%#*}"          # хвостовой комментарий
+      value="${value//[[:space:]]/}"
+      value="${value//\"/}"
+      PORT="$value"
+    fi
+  done < "$ENV_FILE"
 fi
 PORT="${PORT:-4319}"
 
