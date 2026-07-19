@@ -119,8 +119,9 @@
        с дырами). Внутри одной колонки карточки встают друг под другом. */
     .groups { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: flex-start; }
     /* колонки растут поровну и заполняют ряд (в одном ряду ширина у всех одинаковая),
-       но не разрастаются в гигантов при 1-2 группах (max-width). */
-    .group { flex: 1 1 420px; max-width: 720px; min-width: 0; }
+       но не разрастаются в гигантов при 1-2 группах (max-width): растянутая на весь монитор
+       карточка под сорок символов текста читается хуже компактной. */
+    .group { flex: 1 1 380px; max-width: 520px; min-width: 0; }
     .group .grid { display: flex; flex-direction: column; gap: 12px; }
 
     .card {
@@ -170,11 +171,16 @@
       50%     { box-shadow: 0 0 22px 1px rgba(255,93,99,.28), 0 8px 22px rgba(0,0,0,.35); }
     }
 
-    .chead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+    /* padding-right держит место под кнопку удаления в углу: иначе она ложится на бейдж */
+    .chead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; padding-right: 24px; }
     .pname { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-    .proj { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .sid { font-size: 11px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; flex: none; }
-    .dur { font-size: 11px; color: var(--faint); flex: none; font-variant-numeric: tabular-nums; }
+    /* имя проекта - главное на карточке, поэтому сжимается последним: min-width держит его
+       читаемым, а необязательный возраст сессии прячется первым (см. .dur ниже) */
+    .proj { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 7em; }
+    /* хеш сессии сжимается раньше имени проекта: без flex-сжатия он выдавливал бы бейдж
+       на текст соседа (элементы с flex:none просто накладываются друг на друга) */
+    .sid { font-size: 11px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; flex: 0 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; }
+    .dur { font-size: 11px; color: var(--faint); flex: 0 1 auto; overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .dur::before { content: "·"; margin: 0 5px; opacity: .6; }
 
     .badge {
@@ -185,6 +191,24 @@
     .badge.error { background: rgba(255,180,84,.13); color: var(--amber); border-color: rgba(255,180,84,.36); }
     .badge.waiting { background: rgba(255,93,99,.17); color: #ff8a8e; border-color: rgba(255,93,99,.45); }
     .badge.ready { background: rgba(139,149,166,.12); color: var(--dim); border-color: rgba(139,149,166,.28); }
+
+    /* текст уведомления: чего именно ждут ("Claude needs your permission to use Bash") */
+    .note {
+      font-size: 12px; line-height: 1.45; color: #ffb9bc; margin: 0 0 9px;
+      padding-left: 9px; border-left: 2px solid rgba(255,93,99,.45); word-break: break-word;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    }
+
+    /* убрать карточку руками: зомби после закрытия терминала иначе висит часами до pruneStale */
+    .kill {
+      position: absolute; top: 8px; right: 8px; width: 22px; height: 22px; line-height: 1;
+      display: grid; place-items: center; padding: 0;
+      background: rgba(9,12,17,.7); color: var(--faint); border: 1px solid var(--border);
+      border-radius: 6px; font-size: 14px; cursor: pointer; opacity: 0;
+      transition: opacity .15s, color .15s, border-color .15s;
+    }
+    .card:hover .kill, .kill:focus-visible { opacity: 1; }
+    .kill:hover { color: var(--red); border-color: rgba(255,93,99,.5); }
 
     .title {
       font-size: 13px; line-height: 1.5; color: var(--dim); margin: 2px 0 10px; word-break: break-word;
@@ -305,6 +329,18 @@
       return 'идёт ' + Math.floor(h / 24) + ' дн';
     }
 
+    // компактное «сколько уже ждёт» для бейджа красной карточки
+    function waitText(ts) {
+      if (!ts) return '';
+      const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+      if (s < 60) return s + ' с';
+      const m = Math.floor(s / 60);
+      if (m < 60) return m + ' мин';
+      const h = Math.floor(m / 60);
+      if (h < 24) return h + ' ч';
+      return Math.floor(h / 24) + ' дн';
+    }
+
     // активная карточка без событий дольше порога - вероятно сессия подвисла/закрыта (см. tickTimes)
     const IDLE_MS = 4 * 60 * 1000;
 
@@ -342,7 +378,7 @@
       ));
     }
     function sig(sessions) {
-      return sessions.map((c) => [c.sessionId, c.project, c.status, c.reason, c.title, c.tool, c.toolInfo, c.terminal].join('')).join('');
+      return sessions.map((c) => [c.sessionId, c.project, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal].join('')).join('');
     }
     function badgeFor(c) {
       if (c.status === 'waiting') return { cls: 'waiting', label: WAIT_BADGE[c.reason] || 'ждёт тебя' };
@@ -361,28 +397,44 @@
     function cardHtml(c) {
       const b = badgeFor(c);
       const sid = '#' + String(c.sessionId || '').slice(0, 8);
-      const showTool = c.tool && (c.status === 'tool' || c.status === 'working' || c.status === 'error');
+      // при ожидании разрешения/ответа тул показываем тоже: именно он объясняет, на что
+      // именно спрашивают («ждёт разрешения · Bash · git push --force»)
+      const asking = c.status === 'waiting' && (c.reason === 'permission' || c.reason === 'question');
+      const showTool = Boolean(c.tool) && (c.status === 'tool' || c.status === 'working' || c.status === 'error' || asking);
       const toolTxt = showTool ? esc(c.tool) + (c.toolInfo ? ' · ' + esc(c.toolInfo) : '') : '';
       const toolHtml = showTool ? `<div class="tool"><span class="d"></span>${toolTxt}</div>` : '';
-      const durHtml = c.createdAt ? `<span class="dur" data-created="${c.createdAt}">${durText(c.createdAt)}</span>` : '';
+      const noteHtml = c.note ? `<div class="note">${esc(c.note)}</div>` : '';
+      // у красной карточки возраст не показываем: время ожидания уже стоит в бейдже,
+      // а два времени рядом в узкой карточке съедают имя проекта
+      const durHtml = c.createdAt && c.status !== 'waiting'
+        ? `<span class="dur" data-created="${c.createdAt}">${durText(c.createdAt)}</span>`
+        : '';
       let titleHtml = '';
       if (c.title) titleHtml = `<div class="title">${esc(c.title)}</div>`;
-      else if (!showTool) titleHtml = `<div class="title muted">${esc(idleText(c))}</div>`;
+      else if (!showTool && !noteHtml) titleHtml = `<div class="title muted">${esc(idleText(c))}</div>`;
       const foot = c.terminal ? `<span class="term" style="--tc:${termColor(c.terminal)}">${esc(c.terminal)}</span>` : '<span class="src">claude-code</span>';
-      return `<button class="card s-${c.status}" data-id="${esc(c.sessionId)}" title="перейти к сессии (WebStorm или её терминал)">
+      // для красной карточки главная цифра - сколько она уже ждёт, поэтому она в бейдже
+      const badgeHtml = c.status === 'waiting'
+        ? `<span class="badge ${b.cls}">${b.label} · <span class="wt" data-ts="${c.updatedAt || 0}">${waitText(c.updatedAt)}</span></span>`
+        : `<span class="badge ${b.cls}">${b.label}</span>`;
+      return `<div class="card s-${c.status}" role="button" tabindex="0" data-id="${esc(c.sessionId)}" title="перейти к сессии (WebStorm или её терминал)">
+        <button class="kill" data-kill="${esc(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
         <div class="chead">
           <span class="pname"><span class="proj">${esc(c.project)}</span><span class="sid">${sid}</span>${durHtml}</span>
-          <span class="badge ${b.cls}">${b.label}</span>
+          ${badgeHtml}
         </div>
         ${titleHtml}
+        ${noteHtml}
         ${toolHtml}
         <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relTime(c.updatedAt)}</span><span class="idle">нет активности</span>${foot}</div>
-      </button>`;
+      </div>`;
     }
 
     function render() {
       const list = data.sessions || [];
-      const waiting = list.filter((c) => c.status === 'waiting').sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      // кто дольше ждёт, тот выше: разбираешь самое залежавшееся, и появление новой красной
+      // карточки не сдвигает те, что уже в списке
+      const waiting = list.filter((c) => c.status === 'waiting').sort((a, b) => (a.updatedAt || 0) - (b.updatedAt || 0));
       const busy = list.filter((c) => c.status !== 'waiting');
 
       let html = '';
@@ -428,6 +480,8 @@
         const rel = el.querySelector('.rel');
         const ts = byId[el.dataset.id];
         if (rel && ts != null) { rel.dataset.ts = ts; rel.textContent = relTime(ts); }
+        const wt = el.querySelector('.wt');
+        if (wt && ts != null) { wt.dataset.ts = ts; wt.textContent = waitText(ts); }
       }
     }
     // раз в секунду двигаем время «на месте» (без ре-рендера) и подсвечиваем протухшие карточки
@@ -438,6 +492,8 @@
         if (rel) rel.textContent = relTime(Number(rel.dataset.ts));
         const dur = el.querySelector('.dur');
         if (dur) dur.textContent = durText(Number(dur.dataset.created));
+        const wt = el.querySelector('.wt');
+        if (wt) wt.textContent = waitText(Number(wt.dataset.ts));
         // «нет активности» только для активных статусов - waiting/ready законно ждут человека
         const busy = /\bs-(thinking|tool|working|error)\b/.test(el.className);
         const ts = Number(rel && rel.dataset.ts) || 0;
@@ -455,16 +511,43 @@
       toastTimer = setTimeout(() => el.classList.remove('show'), 4000);
     }
 
-    board.addEventListener('click', async (e) => {
-      const card = e.target.closest('.card');
-      if (!card) return;
+    async function focusSession(id) {
       try {
-        const res = await fetch('/focus/' + encodeURIComponent(card.dataset.id), { method: 'POST' });
+        const res = await fetch('/focus/' + encodeURIComponent(id), { method: 'POST' });
         if (res.status === 204) toast('Пока не знаю, где живёт эта сессия. Дай ей сделать любой шаг в терминале - и клик заработает');
         else if (!res.ok) toast('Не удалось перейти к сессии');
       } catch {
         toast('Сервер борда не отвечает');
       }
+    }
+
+    async function dropSession(id) {
+      try {
+        const res = await fetch('/session/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (!res.ok && res.status !== 404) toast('Не удалось убрать карточку');
+      } catch {
+        toast('Сервер борда не отвечает');
+      }
+    }
+
+    board.addEventListener('click', (e) => {
+      const kill = e.target.closest('.kill');
+      if (kill) {
+        dropSession(kill.dataset.kill);
+        return;
+      }
+      const card = e.target.closest('.card');
+      if (card) focusSession(card.dataset.id);
+    });
+
+    // карточка это div с role="button" (внутрь вложена кнопка удаления, кнопку в кнопку нельзя),
+    // поэтому Enter/Space обрабатываем сами - иначе борд перестал бы работать с клавиатуры
+    board.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const card = e.target.closest('.card');
+      if (!card || e.target.closest('.kill')) return;
+      e.preventDefault();
+      focusSession(card.dataset.id);
     });
 
     function setLive(on) {

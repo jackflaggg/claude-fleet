@@ -24,6 +24,7 @@ export const WAIT_REASON = {
 
 const MAX_TITLE = 300;
 const MAX_TOOL_INFO = 70;
+const MAX_NOTE = 120;
 
 function clip(value, limit = MAX_TITLE) {
   if (typeof value !== 'string') return '';
@@ -173,6 +174,7 @@ export function applyEvent(sessions, event, now) {
     toolInfo: null,
     status: STATUS.READY,
     reason: null,
+    note: null,
   };
 
   const card = { ...previous, updatedAt: now };
@@ -196,12 +198,14 @@ export function applyEvent(sessions, event, now) {
       card.tool = null;
       card.toolInfo = null;
       card.reason = null;
+      card.note = null;
       break;
     case 'UserPromptSubmit':
       card.status = STATUS.THINKING;
       card.tool = null;
       card.toolInfo = null;
       card.reason = null;
+      card.note = null;
       {
         const prompt = event.prompt ?? event.user_prompt;
         // Служебную инъекцию не пишем в заголовок - сохраняем прошлую реальную задачу.
@@ -213,6 +217,7 @@ export function applyEvent(sessions, event, now) {
     case 'PreToolUse':
       card.status = STATUS.TOOL;
       card.reason = null;
+      card.note = null;
       if (typeof event.tool_name === 'string') {
         card.tool = event.tool_name;
         card.toolInfo = toolTarget(event.tool_name, event.tool_input);
@@ -221,6 +226,7 @@ export function applyEvent(sessions, event, now) {
     case 'PostToolUse':
       card.status = isToolError(event.tool_response) ? STATUS.ERROR : STATUS.WORKING;
       card.reason = null;
+      card.note = null;
       if (typeof event.tool_name === 'string') {
         card.tool = event.tool_name;
         card.toolInfo = toolTarget(event.tool_name, event.tool_input);
@@ -229,11 +235,20 @@ export function applyEvent(sessions, event, now) {
     case 'Notification':
       card.status = STATUS.WAITING;
       card.reason = waitReasonFromNotification(event);
+      // Текст уведомления - единственное место, где видно, ЧЕГО именно от тебя хотят
+      // ("Claude needs your permission to use Bash"). Без него карточка говорит только
+      // "ждёт разрешения", и приходится идти в терминал, чтобы это выяснить.
+      card.note = clip(event.message, MAX_NOTE) || null;
       break;
     case 'Stop':
-    case 'SubagentStop':
       card.status = STATUS.WAITING;
       card.reason = WAIT_REASON.FINISHED;
+      card.note = null;
+      break;
+    // SubagentStop намеренно не меняет статус: заканчивается субагент, а сама сессия
+    // продолжает работать. Пометить её "закончил ход" - значит покрасить в красное
+    // работающую сессию и утопить в "ждут тебя" настоящие. Обновляем только updatedAt.
+    case 'SubagentStop':
       break;
     default:
       break;

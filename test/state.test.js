@@ -92,6 +92,37 @@ test('Stop - waiting/finished (закончил ход, нужен следую�
   assert.equal(state.s1.reason, WAIT_REASON.FINISHED);
 });
 
+test('Notification кладёт текст уведомления в note (видно, чего именно хотят)', () => {
+  const state = applyEvent({}, ev({ hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' }), NOW);
+  assert.equal(state.s1.note, 'Claude needs your permission to use Bash');
+});
+
+test('note сбрасывается, когда сессия снова пошла работать', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'Notification', message: 'Claude needs your permission to use Bash' }), NOW);
+  assert.ok(state.s1.note);
+  state = applyEvent(state, ev({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }), NOW + 1);
+  assert.equal(state.s1.note, null, 'разрешение выдано - текст уведомления больше не актуален');
+});
+
+test('Stop не оставляет note от прошлого уведомления', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'Notification', message: 'нужно разрешение' }), NOW);
+  state = applyEvent(state, ev({ hook_event_name: 'Stop' }), NOW + 1);
+  assert.equal(state.s1.note, null);
+});
+
+test('слишком длинный текст уведомления обрезается', () => {
+  const state = applyEvent({}, ev({ hook_event_name: 'Notification', message: 'я'.repeat(400) }), NOW);
+  assert.ok(state.s1.note.length <= 120, `note длиной ${state.s1.note.length} не влезает в карточку`);
+});
+
+test('SubagentStop не помечает работающую сессию как "закончил ход"', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: { description: 'разведка' } }), NOW);
+  state = applyEvent(state, ev({ hook_event_name: 'SubagentStop' }), NOW + 1000);
+  assert.equal(state.s1.status, STATUS.TOOL, 'сессия продолжает работать, субагент закончился не она');
+  assert.notEqual(state.s1.reason, WAIT_REASON.FINISHED);
+  assert.equal(state.s1.updatedAt, NOW + 1000, 'но признак жизни обновлён');
+});
+
 test('terminal - человекочитаемое имя из appId (WebStorm / Alacritty / фолбэк)', () => {
   const ws = applyEvent({}, ev({ hook_event_name: 'SessionStart', appId: 'com.jetbrains.WebStorm' }), NOW);
   assert.equal(ws.s1.terminal, 'WebStorm');
