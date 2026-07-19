@@ -144,6 +144,46 @@ function snapshot() {
   return Object.values(sessions).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
 }
 
+/**
+ * Счётчики для диагностики (`GET /stats`). Нужны, чтобы не гадать о цене хука: у события
+ * PostToolUse в tool_response лежит результат инструмента, и на большом Read это могут быть
+ * сотни КБ через curl на каждый вызов. Держим только числа: одна запись на тип события.
+ */
+const stats = { startedAt: Date.now(), events: 0, bytes: 0, byEvent: new Map() };
+
+function noteEventSize(name, bytes) {
+  stats.events += 1;
+  stats.bytes += bytes;
+  const row = stats.byEvent.get(name) ?? { count: 0, bytes: 0, max: 0 };
+  row.count += 1;
+  row.bytes += bytes;
+  if (bytes > row.max) row.max = bytes;
+  stats.byEvent.set(name, row);
+}
+
+function handleStats(res) {
+  const byEvent = [...stats.byEvent]
+    .map(([name, row]) => ({
+      name,
+      count: row.count,
+      maxKb: +(row.max / 1024).toFixed(1),
+      avgKb: +(row.bytes / row.count / 1024).toFixed(2),
+    }))
+    .sort((a, b) => b.maxKb - a.maxKb);
+  const body = {
+    uptimeMin: +((Date.now() - stats.startedAt) / 60000).toFixed(1),
+    rssMb: +(process.memoryUsage().rss / 1048576).toFixed(1),
+    sessions: Object.keys(sessions).length,
+    boards: sseClients.size,
+    events: stats.events,
+    totalMb: +(stats.bytes / 1048576).toFixed(2),
+    snapshotKb: +(payload().length / 1024).toFixed(1),
+    byEvent,
+  };
+  res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify(body, null, 2));
+}
+
 /** Незнакомые типы событий: имя -> сколько раз пришло. Копится до рестарта, на диск не идёт. */
 const unknownEvents = new Map();
 /**
@@ -241,8 +281,9 @@ async function handleEvent(req, res) {
   const appHeader = req.headers['x-fleet-app'];
   if (typeof appHeader === 'string' && appHeader) event.appId = appHeader;
 
-  if (event?.hook_event_name && !isHandledEvent(event.hook_event_name)) {
-    noteUnknownEvent(event.hook_event_name);
+  if (event?.hook_event_name) {
+    noteEventSize(event.hook_event_name, raw.length);
+    if (!isHandledEvent(event.hook_event_name)) noteUnknownEvent(event.hook_event_name);
   }
 
   sessions = applyEvent(sessions, event, Date.now());
@@ -345,6 +386,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'GET' && url.pathname === '/stream') return handleStream(req, res);
+  if (req.method === 'GET' && url.pathname === '/stats') return handleStats(res);
 
   if (req.method === 'POST' && url.pathname.startsWith('/focus/')) {
     const id = decodeURIComponent(url.pathname.slice('/focus/'.length));
