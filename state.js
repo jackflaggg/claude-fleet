@@ -13,6 +13,7 @@ export const STATUS = {
   WORKING: 'working',
   ERROR: 'error',
   WAITING: 'waiting',
+  COMPACTING: 'compacting',
 };
 
 /** Причина, по которой сессия попала в "ждут тебя" (только для STATUS.WAITING). */
@@ -20,6 +21,7 @@ export const WAIT_REASON = {
   FINISHED: 'finished', // Claude закончил ход, нужен следующий шаг
   PERMISSION: 'permission', // Claude просит разрешение на инструмент
   QUESTION: 'question', // Claude ждёт твой ответ на вопрос (AskUserQuestion / план / простой)
+  FAILED: 'failed', // ход оборвался ошибкой API (StopFailure) - сессия встала сама
 };
 
 /**
@@ -33,9 +35,13 @@ export const HANDLED_EVENTS = new Set([
   'UserPromptSubmit',
   'PreToolUse',
   'PostToolUse',
+  'PostToolUseFailure',
   'Notification',
   'Stop',
+  'StopFailure',
   'SubagentStop',
+  'PreCompact',
+  'PostCompact',
   'SessionEnd',
 ]);
 
@@ -152,9 +158,38 @@ function isToolError(toolResponse) {
   );
 }
 
+/**
+ * Тип уведомления Claude Code присылает отдельным полем notification_type. Оно точнее
+ * текста: формулировка message меняется между версиями, а разбор по подстроке "permission"
+ * ломается молча. Текстовый фолбэк ниже оставлен намеренно - поле есть не во всех версиях,
+ * и без него борд должен продолжать работать как раньше.
+ */
+const NOTIFICATION_REASON = {
+  permission_prompt: WAIT_REASON.PERMISSION,
+  idle_prompt: WAIT_REASON.QUESTION,
+  agent_needs_input: WAIT_REASON.QUESTION,
+  elicitation_dialog: WAIT_REASON.QUESTION,
+  agent_completed: WAIT_REASON.FINISHED,
+};
+
+/**
+ * Уведомления, которые ничего от тебя не хотят (успешный логин, закрытый диалог). Раньше
+ * любой Notification красил карточку в красное - и борд звал к сессии, которой ты не нужен.
+ */
+const INFO_NOTIFICATIONS = new Set([
+  'auth_success',
+  'elicitation_complete',
+  'elicitation_response',
+]);
+
+function notificationKind(event) {
+  return typeof event.notification_type === 'string' ? event.notification_type : '';
+}
+
 function waitReasonFromNotification(event) {
-  // Различаем причину только по тексту уведомления: у события Notification нет поля matcher
-  // (matcher - это конфиг хука в settings.json, в payload он не приходит).
+  const known = NOTIFICATION_REASON[notificationKind(event)];
+  if (known) return known;
+  // Фолбэк для версий без notification_type: различаем причину по тексту уведомления.
   const message = typeof event.message === 'string' ? event.message.toLowerCase() : '';
   const isPermission =
     message.includes('permission') ||
@@ -196,6 +231,7 @@ export function applyEvent(sessions, event, now) {
     status: STATUS.READY,
     reason: null,
     note: null,
+    waitingSince: null,
   };
 
   const card = { ...previous, updatedAt: now };
@@ -253,7 +289,24 @@ export function applyEvent(sessions, event, now) {
         card.toolInfo = toolTarget(event.tool_name, event.tool_input);
       }
       break;
-    case 'Notification':
+    // Выделенное событие ошибки инструмента: точнее, чем нюхать tool_response вслепую.
+    case 'PostToolUseFailure':
+      card.status = STATUS.ERROR;
+      card.reason = null;
+      card.note = null;
+      if (typeof event.tool_name === 'string') {
+        card.tool = event.tool_name;
+        card.toolInfo = toolTarget(event.tool_name, event.tool_input);
+      }
+      break;
+    case 'Notification': {
+      const kind = notificationKind(event);
+      // Информационное уведомление - не повод звать человека к сессии.
+      if (INFO_NOTIFICATIONS.has(kind)) break;
+      // idle_prompt значит "ты давно не отвечал", а не новую причину ожидания. Оно прилетает
+      // повторно, пока сессия ждёт, и раньше подменяло исходную причину: карточка "закончил
+      // ход" превращалась в "нужен ответ". Уже ждущую карточку такое уведомление не трогает.
+      if (kind === 'idle_prompt' && previous.status === STATUS.WAITING) break;
       card.status = STATUS.WAITING;
       card.reason = waitReasonFromNotification(event);
       // Текст уведомления - единственное место, где видно, ЧЕГО именно от тебя хотят
@@ -261,10 +314,35 @@ export function applyEvent(sessions, event, now) {
       // "ждёт разрешения", и приходится идти в терминал, чтобы это выяснить.
       card.note = clip(event.message, MAX_NOTE) || null;
       break;
+    }
     case 'Stop':
       card.status = STATUS.WAITING;
       card.reason = WAIT_REASON.FINISHED;
       card.note = null;
+      break;
+    // Ход оборвался ошибкой API. Без этого события сессия оставалась в статусе "думает",
+    // выглядела живой и только через IDLE_MS тускнела - то есть мёртвая сессия была
+    // неотличима от работающей ровно там, ради чего борд и существует.
+    case 'StopFailure':
+      card.status = STATUS.WAITING;
+      card.reason = WAIT_REASON.FAILED;
+      card.tool = null;
+      card.toolInfo = null;
+      card.note = clip(event.message ?? event.error, MAX_NOTE) || null;
+      break;
+    // Компакция контекста идёт без единого события инструмента: карточка замирала на
+    // последнем туле и уходила в "нет активности", хотя сессия жива и занята делом.
+    case 'PreCompact':
+      card.status = STATUS.COMPACTING;
+      card.tool = null;
+      card.toolInfo = null;
+      card.reason = null;
+      card.note = null;
+      break;
+    case 'PostCompact':
+      card.status = STATUS.THINKING;
+      card.tool = null;
+      card.toolInfo = null;
       break;
     // SubagentStop намеренно не меняет статус: заканчивается субагент, а сама сессия
     // продолжает работать. Пометить её "закончил ход" - значит покрасить в красное
@@ -273,6 +351,17 @@ export function applyEvent(sessions, event, now) {
       break;
     default:
       break;
+  }
+
+  // Момент входа в ожидание. Отдельно от updatedAt, потому что updatedAt - это "последняя
+  // активность" и его двигает любое событие: повторный idle-Notification, SubagentStop.
+  // Пока время ожидания считалось от updatedAt, счётчик "ждёт N мин" обнулялся сам собой,
+  // и карточка проваливалась вниз секции, отсортированной "дольше всех ждущий сверху" -
+  // то есть секция прятала ровно то, ради чего её и завели.
+  if (card.status === STATUS.WAITING) {
+    if (previous.status !== STATUS.WAITING || !previous.waitingSince) card.waitingSince = now;
+  } else {
+    card.waitingSince = null;
   }
 
   next[id] = card;

@@ -57,13 +57,21 @@ const [settingsPath, hookPath] = process.argv.slice(2);
 // PreToolUse/PostToolUse с matcher "*" ловят каждый вызов инструмента - это и даёт
 // строку "над чем сейчас работает". SubagentStop намеренно не подключаем: борд его
 // игнорирует, а лишний хук стоит времени на каждом субагенте.
+//
+// StopFailure/PreCompact/PostCompact закрывают слепые зоны, где сессия занята или уже
+// мертва, но событий не шлёт, и карточка врёт: оборвавшийся на ошибке API ход выглядел
+// как "думает", а компакция контекста - как зависшая сессия. События редкие, цена нулевая.
 const EVENTS = [
   ['SessionStart', null],
   ['UserPromptSubmit', null],
   ['PreToolUse', '*'],
   ['PostToolUse', '*'],
+  ['PostToolUseFailure', '*'],
   ['Notification', null],
   ['Stop', null],
+  ['StopFailure', null],
+  ['PreCompact', null],
+  ['PostCompact', null],
   ['SessionEnd', null],
 ];
 
