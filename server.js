@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { applyEvent, pruneStale, isHandledEvent } from './state.js';
 import { resolveFocus } from './focus.js';
+import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './guards.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -52,40 +53,15 @@ function log(message) {
 }
 
 /**
- * Защита от DNS rebinding. Браузер обязан слать Host, и при ребайнде там будет чужой домен
- * (evil.com), а не localhost - хотя пакет придёт на 127.0.0.1. Без этой проверки любая
- * открытая вкладка может прочитать /stream, а там все промпты, пути проектов и команды Bash.
- * Свои хосты (посмотреть борд с планшета) добавляются через FLEET_ALLOWED_HOSTS.
+ * Кто имеет право обращаться к борду. Списки и сами проверки живут в guards.js (чистое ядро
+ * с тестами): Origin выводится из тех же хостов, что и Host, иначе борд с планшета
+ * (FLEET_ALLOWED_HOSTS) открывался бы на просмотр, но клик по карточке ловил 403.
  */
-const ALLOWED_HOSTS = new Set([
-  `${HOST}:${PORT}`,
-  `localhost:${PORT}`,
-  `127.0.0.1:${PORT}`,
-  `[::1]:${PORT}`,
-  ...(process.env.FLEET_ALLOWED_HOSTS || '')
-    .split(',')
-    .map((h) => h.trim())
-    .filter(Boolean),
-]);
-
-function isAllowedHost(req) {
-  const host = req.headers.host;
-  return typeof host === 'string' && ALLOWED_HOSTS.has(host);
-}
-
-const ALLOWED_ORIGINS = new Set([`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`]);
-
-/**
- * Отсекает запросы, инициированные чужой страницей. Host-проверка ловит rebinding, но не
- * обычный CSRF: сайт может честно постить на http://127.0.0.1:4319 и Host будет верным.
- * report.sh ходит через curl - у него нет ни Sec-Fetch-Site, ни Origin, поэтому он проходит.
- */
-function isCrossSite(req) {
-  const site = req.headers['sec-fetch-site'];
-  if (typeof site === 'string' && site !== 'same-origin' && site !== 'none') return true;
-  const origin = req.headers.origin;
-  return typeof origin === 'string' && origin !== '' && !ALLOWED_ORIGINS.has(origin);
-}
+const { hosts: ALLOWED_HOSTS, origins: ALLOWED_ORIGINS } = buildAllowLists({
+  host: HOST,
+  port: PORT,
+  extraHosts: process.env.FLEET_ALLOWED_HOSTS,
+});
 
 /**
  * Лаунчер WebStorm и имя приложения берём из .env, не хардкодим в коде: путь установки
@@ -151,14 +127,23 @@ function snapshot() {
  */
 const stats = { startedAt: Date.now(), events: 0, bytes: 0, byEvent: new Map() };
 
+/**
+ * Число строк в разбивке ограничено ровно так же, как в unknownEvents: раньше здесь копился
+ * любой присланный hook_event_name без предела, и поток событий с уникальными именами
+ * раздувал Map (замерено: 3000 имён = +12 МБ RSS). Своих типов событий двенадцать,
+ * запаса до лимита хватает с головой, остальное сваливается в «прочие».
+ */
+const MAX_EVENT_KINDS = 24;
+
 function noteEventSize(name, bytes) {
   stats.events += 1;
   stats.bytes += bytes;
-  const row = stats.byEvent.get(name) ?? { count: 0, bytes: 0, max: 0 };
+  const key = boundedKey(stats.byEvent, name, MAX_EVENT_KINDS);
+  const row = stats.byEvent.get(key) ?? { count: 0, bytes: 0, max: 0 };
   row.count += 1;
   row.bytes += bytes;
   if (bytes > row.max) row.max = bytes;
-  stats.byEvent.set(name, row);
+  stats.byEvent.set(key, row);
 }
 
 function handleStats(res) {
@@ -186,19 +171,11 @@ function handleStats(res) {
 
 /** Незнакомые типы событий: имя -> сколько раз пришло. Копится до рестарта, на диск не идёт. */
 const unknownEvents = new Map();
-/**
- * Разных имён храним ограниченно, остальное сваливаем в одну строку. Иначе поток событий
- * с уникальными именами (кривой хук, чужой софт на том же порту) раздувал бы Map без предела:
- * на 3000 разных имён это стоило почти 7 МБ. Больше десятка типов всё равно не читаемо.
- */
+/** Разных имён храним ограниченно (см. boundedKey), больше десятка всё равно не читаемо. */
 const MAX_UNKNOWN_KINDS = 12;
-const MAX_UNKNOWN_NAME = 40;
-const OTHER_UNKNOWN = 'прочие';
 
 function noteUnknownEvent(rawName) {
-  const name = String(rawName).slice(0, MAX_UNKNOWN_NAME);
-  const known = unknownEvents.has(name);
-  const key = known || unknownEvents.size < MAX_UNKNOWN_KINDS ? name : OTHER_UNKNOWN;
+  const key = boundedKey(unknownEvents, rawName, MAX_UNKNOWN_KINDS);
   const seen = unknownEvents.get(key) ?? 0;
   unknownEvents.set(key, seen + 1);
   // в лог пишем только первый раз, чтобы поток событий не забил fleet.log
@@ -372,11 +349,11 @@ async function handleIndex(res) {
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
-  if (!isAllowedHost(req)) {
+  if (!isAllowedHost(req.headers, ALLOWED_HOSTS)) {
     res.writeHead(403).end('чужой Host');
     return;
   }
-  if (req.method !== 'GET' && isCrossSite(req)) {
+  if (req.method !== 'GET' && isCrossSite(req.headers, ALLOWED_ORIGINS)) {
     res.writeHead(403).end('запрос с чужой страницы');
     return;
   }
