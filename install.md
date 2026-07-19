@@ -1,7 +1,24 @@
 # Установка claude-fleet
 
-Шаги: (1) скопировать конфиг, (2) подключить хуки в глобальный конфиг Claude Code,
-(3) поднять сервер на автозапуск при логине.
+```bash
+./scripts/install.sh
+```
+
+Скрипт делает всё: создаёт `.env` из шаблона, дописывает хуки в `~/.claude/settings.json`,
+генерирует launchd-агент и перезагружает его. Идемпотентный - гоняй повторно после переезда
+папки или обновления node, дубликатов не будет.
+
+Что важно знать про него:
+
+- **чужие хуки не трогает.** Настройки мержатся через node, перед записью кладётся бэкап
+  `~/.claude/settings.json.bak`. Хуки других тулов в тех же событиях остаются на месте.
+- **пути не зашиты.** Путь к репозиторию берётся от расположения самого скрипта, node ищется
+  по алиасу fnm `default` (он переживает обновления версий), и только если его нет - по `PATH`.
+  Если в итоге выбран временный путь `fnm_multishells`, скрипт предупредит: такой путь
+  протухнет вместе с сессией терминала, и агент уйдёт в петлю перезапусков.
+- **снять всё:** `./scripts/uninstall.sh` - гасит агент и убирает только свои хуки.
+
+Ниже - то же самое руками, если хочется контролировать каждый шаг.
 
 ## 1. Конфиг
 
@@ -56,12 +73,26 @@ Node ставится через fnm, поэтому используем ста
   <string>/Users/rasulkiller/Projects/claude-fleet</string>
   <key>RunAtLoad</key>
   <true/>
+  <!-- перезапуск только после падения: остановленный вручную агент остаётся остановленным -->
   <key>KeepAlive</key>
+  <dict>
+    <key>Crashed</key>
+    <true/>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <!-- пауза между перезапусками: если порт занят, лог не заливается петлёй -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <!-- процесс почти всё время спит, системе можно не тратить на него батарею -->
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
   <true/>
   <key>StandardOutPath</key>
   <string>/Users/rasulkiller/Projects/claude-fleet/fleet.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/rasulkiller/Projects/claude-fleet/fleet.log</string>
+  <string>/Users/rasulkiller/Projects/claude-fleet/fleet.error.log</string>
 </dict>
 </plist>
 ```
