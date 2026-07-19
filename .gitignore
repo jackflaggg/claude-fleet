@@ -1,5 +1,6 @@
 node_modules/
 fleet.log
+fleet.error.log
 .fleet-state.json
 .env
 .idea/

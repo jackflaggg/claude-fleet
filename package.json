@@ -6,6 +6,8 @@
   "private": true,
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "setup": "./scripts/install.sh",
+    "board": "./scripts/board.sh"
   }
 }
