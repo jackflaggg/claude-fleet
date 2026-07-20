@@ -36,19 +36,21 @@
       -webkit-font-smoothing: antialiased;
       overflow-x: hidden;
     }
-    /* живой фон: небула из дрейфующих пятен + тех-сетка + зерно */
+    /* фон: небула из пятен + тех-сетка + зерно. Пятна СТАТИЧНЫ намеренно.
+       Пока они дрейфовали через transform со scale(), blur(95px) на трёх слоях
+       по 50vw пересчитывался заново каждый кадр: GPU-процесс браузера держал
+       ~54% ядра круглосуточно ради текстуры, на которую никто не смотрит.
+       Без анимации blur растрируется один раз и слой кешируется, CPU в покое ~0.
+       Не возвращать сюда движение: борд стоит на втором мониторе сутками. */
     .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden;
       background: radial-gradient(135% 120% at 50% -12%, #2b3d5c, #1b2534 76%); }
-    .bg .blob { position: absolute; border-radius: 50%; filter: blur(95px); will-change: transform; }
+    .bg .blob { position: absolute; border-radius: 50%; filter: blur(95px); }
     .bg .b1 { width: 50vw; height: 50vw; left: -12vw; top: -16vw; opacity: .30;
-      background: radial-gradient(circle, #2f6dff, transparent 66%); animation: float1 26s ease-in-out infinite; }
+      background: radial-gradient(circle, #2f6dff, transparent 66%); }
     .bg .b2 { width: 46vw; height: 46vw; right: -14vw; bottom: -18vw; opacity: .28;
-      background: radial-gradient(circle, #16b8a6, transparent 66%); animation: float2 32s ease-in-out infinite; }
+      background: radial-gradient(circle, #16b8a6, transparent 66%); }
     .bg .b3 { width: 42vw; height: 42vw; left: 44vw; top: 24vh; opacity: .18;
-      background: radial-gradient(circle, #7a4bff, transparent 68%); animation: float3 38s ease-in-out infinite; }
-    @keyframes float1 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(7vw,5vh) scale(1.15); } }
-    @keyframes float2 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-6vw,-5vh) scale(1.1); } }
-    @keyframes float3 { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(-5vw,7vh) scale(1.08); } }
+      background: radial-gradient(circle, #7a4bff, transparent 68%); }
     .bg .grid { position: absolute; inset: 0;
       background-image:
         linear-gradient(rgba(130,180,255,.055) 1px, transparent 1px),
@@ -65,9 +67,9 @@
     header {
       position: sticky; top: 0; z-index: 10;
       padding: 17px 30px;
-      background: rgba(27,37,52,.76);
-      backdrop-filter: saturate(150%) blur(14px);
-      -webkit-backdrop-filter: saturate(150%) blur(14px);
+      /* фон непрозрачный вместо backdrop-filter: размытие подложки браузер
+         обязан пересчитывать на каждом кадре, когда под ним что-то меняется. */
+      background: rgba(27,37,52,.94);
       border-bottom: 1px solid var(--border);
     }
     /* содержимое шапки центрируется по той же оси, что и карточки: лого встаёт над ними.
@@ -87,7 +89,11 @@
       content: ""; position: absolute; inset: 4px; border-radius: 50%;
       border: 1.5px solid currentColor; opacity: 0;
     }
-    .mark.alert::before, .mark.alert::after { animation: sonar 2.8s ease-out infinite; }
+    /* will-change поднимает кольца на свой слой: без него браузер рерастеризовывал
+       обводку с border-radius на каждом кадре масштабирования (замер: ~10% ядра) */
+    .mark.alert::before, .mark.alert::after {
+      animation: sonar 2.8s ease-out infinite; will-change: transform, opacity;
+    }
     .mark.alert::after { animation-delay: 1.4s; }
     @keyframes sonar { 0% { transform: scale(.3); opacity: .75; } 100% { transform: scale(1.9); opacity: 0; } }
     .mark.alert { color: var(--red); }
@@ -102,9 +108,11 @@
     .live { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--dim);
       background: rgba(255,255,255,.05); border: 1px solid var(--border); border-radius: 20px; padding: 4px 13px; flex: none; }
     .live .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex: none; }
-    .live.on .pulse { animation: livePulse 2.2s ease-in-out infinite; }
+    /* свечение статично: пульсация анимировала box-shadow (перерисовка, не композит),
+       и одна эта точка 7x7 держала рендер-луп страницы на 60fps вечно. Связь читается
+       цветом - зелёная против серой у .off, движение для этого не нужно. */
+    .live.on .pulse { box-shadow: 0 0 0 3px rgba(71,201,122,.18); }
     .live.off .pulse { background: var(--faint); }
-    @keyframes livePulse { 0%,100% { box-shadow: 0 0 0 0 rgba(71,201,122,.5); } 50% { box-shadow: 0 0 0 5px rgba(71,201,122,0); } }
 
     /* тумблер системных уведомлений: по умолчанию выключен, звука нет никогда.
        Нужен для случая "сижу в фуллскрине IDE" - борда не видно, даже favicon-бейджа. */
@@ -143,8 +151,16 @@
       color: var(--faint); margin-bottom: 14px;
     }
     .sec-head.attn { color: var(--red); }
-    .sec-head .ping { width: 8px; height: 8px; border-radius: 50%; background: var(--red); animation: ping 1.8s ease-out infinite; }
-    @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(255,93,99,.55); } 70%,100% { box-shadow: 0 0 0 8px rgba(255,93,99,0); } }
+    /* расходящееся кольцо - отдельный слой на transform/opacity. Пульсация через
+       box-shadow стоила ~13% ядра: спред тени перерисовывается каждый кадр, и
+       размер точки тут не спасает. Тот же приём, что у сонара логомарки. */
+    .sec-head .ping { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
+    .sec-head .ping::after {
+      content: ""; position: absolute; inset: 0; border-radius: 50%;
+      background: rgba(255,93,99,.55);
+      animation: ping 1.8s ease-out infinite; will-change: transform, opacity;
+    }
+    @keyframes ping { 0% { transform: scale(1); opacity: .55; } 70%,100% { transform: scale(3); opacity: 0; } }
     .cnt {
       font-size: 12px; color: var(--dim); background: rgba(255,255,255,.04);
       border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; letter-spacing: 0; font-weight: 600;
@@ -216,12 +232,23 @@
     .card.s-waiting {
       background: linear-gradient(158deg, rgba(255,93,99,.15), #232f44 58%);
       border-color: rgba(255,93,99,.4);
+      box-shadow: 0 8px 22px rgba(0,0,0,.35);
+    }
+    /* Дыхание вынесено отдельным слоем, и анимируется у него ТОЛЬКО opacity.
+       Пока пульсировал box-shadow самой карточки, браузер пересчитывал размытие
+       по всему её периметру каждый кадр: замер дал ~21% ядра на одну карточку
+       шириной 600px. Тень внутренняя, потому что .card обрезает содержимое
+       (overflow: hidden) и наружное свечение всё равно не было бы видно.
+       Не анимировать здесь box-shadow, background или border-color: это перерисовка,
+       а не композит. */
+    .glow { display: none; }
+    .card.s-waiting .glow {
+      display: block; position: absolute; inset: 0; border-radius: inherit;
+      pointer-events: none; opacity: 0;
+      box-shadow: inset 0 0 26px 2px rgba(255,93,99,.30);
       animation: breathe 2.2s ease-in-out infinite;
     }
-    @keyframes breathe {
-      0%,100% { box-shadow: 0 0 0 0 rgba(255,93,99,.0), 0 8px 22px rgba(0,0,0,.35); }
-      50%     { box-shadow: 0 0 22px 1px rgba(255,93,99,.28), 0 8px 22px rgba(0,0,0,.35); }
-    }
+    @keyframes breathe { 0%,100% { opacity: 0; } 50% { opacity: 1; } }
 
     /* padding-right держит место под кнопку удаления в углу: иначе она ложится на бейдж */
     .chead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; padding-right: 32px; }
@@ -579,7 +606,7 @@
       const badgeHtml = c.status === 'waiting'
         ? `<span class="badge ${b.cls}">${b.label} · <span class="wt" data-ts="${since}">${waitText(since)}</span></span>`
         : `<span class="badge ${b.cls}">${b.label}</span>`;
-      return `<button class="kill" data-kill="${esc(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
+      return `<i class="glow"></i><button class="kill" data-kill="${esc(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
         <div class="chead">
           <span class="pname"><span class="proj">${esc(c.project)}</span><span class="sid">${sid}</span>${durHtml}</span>
           ${badgeHtml}
