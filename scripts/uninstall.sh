@@ -5,13 +5,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="${FLEET_LABEL:-com.rasulkiller.claude-fleet}"
+BOARD_LABEL="$LABEL-board"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+BOARD_PLIST="$HOME/Library/LaunchAgents/$BOARD_LABEL.plist"
 SETTINGS="$HOME/.claude/settings.json"
 HOOK="$ROOT/hooks/report.sh"
 
-launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-rm -f "$PLIST"
-echo "агент снят"
+# Оба агента: агент автозапуска борда ставится не всегда, но пережить снятие тулзы не должен
+for label in "$LABEL" "$BOARD_LABEL"; do
+  launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+done
+rm -f "$PLIST" "$BOARD_PLIST"
+echo "агенты сняты"
 
 if [ -f "$SETTINGS" ]; then
   node - "$SETTINGS" "$HOOK" <<'NODE'

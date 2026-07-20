@@ -8,11 +8,28 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="${FLEET_LABEL:-com.rasulkiller.claude-fleet}"
+BOARD_LABEL="$LABEL-board"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+BOARD_PLIST="$HOME/Library/LaunchAgents/$BOARD_LABEL.plist"
 SETTINGS="$HOME/.claude/settings.json"
 HOOK="$ROOT/hooks/report.sh"
 
 say() { printf '%s\n' "$*"; }
+
+# Значение переменной из .env: окружение важнее файла, комментарии и кавычки отбрасываем
+env_value() {
+  local key="$1" fallback="$2" found="" line_key line_value
+  eval "found=\${$key:-}"
+  if [ -z "$found" ] && [ -r "$ROOT/.env" ]; then
+    while IFS='=' read -r line_key line_value || [ -n "$line_key" ]; do
+      [ "$line_key" = "$key" ] || continue
+      line_value="${line_value%%#*}"
+      line_value="${line_value//[[:space:]]/}"
+      found="${line_value//\"/}"
+    done < "$ROOT/.env"
+  fi
+  printf '%s\n' "${found:-$fallback}"
+}
 
 # 1. Конфиг ------------------------------------------------------------------
 if [ ! -f "$ROOT/.env" ]; then
@@ -152,17 +169,51 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 say "агент перезагружен"
 
-# 5. Проверка ----------------------------------------------------------------
-PORT="${FLEET_PORT:-}"
-if [ -z "$PORT" ] && [ -r "$ROOT/.env" ]; then
-  while IFS='=' read -r key value || [ -n "$key" ]; do
-    if [ "$key" = "FLEET_PORT" ]; then
-      value="${value%%#*}"; value="${value//[[:space:]]/}"; value="${value//\"/}"
-      PORT="$value"
-    fi
-  done < "$ROOT/.env"
+# 5. Автозапуск окна борда ---------------------------------------------------
+# Отдельным агентом, а не строкой в основном: борд можно закрыть и открыть заново,
+# не трогая сервер, а сервер пережить перезагрузку без окна.
+if [ "$(env_value FLEET_AUTOOPEN 1)" = "1" ]; then
+  cat > "$BOARD_PLIST" <<BOARD_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$BOARD_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$ROOT/scripts/board.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$ROOT</string>
+  <!-- окно открывается один раз при логине, поэтому KeepAlive тут не нужен:
+       закрыл борд руками - он и остаётся закрытым до следующего входа -->
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- скрипт сам ждёт сервер и сам проверяет, не открыт ли борд уже, но если браузер
+       всё же окажется в группе процессов агента, launchd не должен гасить его вместе с job -->
+  <key>AbandonProcessGroup</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$ROOT/fleet.board.log</string>
+  <key>StandardErrorPath</key>
+  <string>$ROOT/fleet.board.log</string>
+</dict>
+</plist>
+BOARD_EOF
+  launchctl bootout "gui/$(id -u)/$BOARD_LABEL" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$BOARD_PLIST"
+  say "автозапуск борда включён: $BOARD_PLIST"
+else
+  # FLEET_AUTOOPEN=0 должен и снимать ранее поставленный агент, иначе выключение не работает
+  launchctl bootout "gui/$(id -u)/$BOARD_LABEL" 2>/dev/null || true
+  rm -f "$BOARD_PLIST"
+  say "автозапуск борда выключен (FLEET_AUTOOPEN=0)"
 fi
-PORT="${PORT:-4319}"
+
+# 6. Проверка ----------------------------------------------------------------
+PORT="$(env_value FLEET_PORT 4319)"
 
 sleep 1
 if curl -sf -o /dev/null "http://localhost:$PORT/"; then
