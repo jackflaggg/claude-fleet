@@ -26,7 +26,14 @@ YANDEX_ID="ru.yandex.desktop.yandex-browser"
 # При автозапуске оба агента стартуют одновременно, и браузер легко успевает раньше сервера.
 # Промахнуться тут дороже, чем подождать: Chromium на ERR_CONNECTION_REFUSED показывает свою
 # страницу ошибки и сам её не перезагружает - EventSource в борде до этого просто не доживает.
-WAIT_SECONDS="${FLEET_BOARD_WAIT:-20}"
+# На холодной загрузке системы node/fnm поднимается заметно дольше обычного (запись в лог видела
+# 60+ секунд от boottime), а launchd не передаёт агенту переменные из .env сам - поэтому, как и
+# для PORT, читаем FLEET_BOARD_WAIT из .env, если её нет в окружении.
+WAIT_SECONDS="${FLEET_BOARD_WAIT:-}"
+if [ -z "$WAIT_SECONDS" ] && [ -f "$ENV_FILE" ]; then
+  WAIT_SECONDS="$(grep -E '^FLEET_BOARD_WAIT=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d '=' -f2 | tr -d '[:space:]"')"
+fi
+WAIT_SECONDS="${WAIT_SECONDS:-20}"
 
 wait_for_server() {
   local deadline=$((SECONDS + WAIT_SECONDS))
