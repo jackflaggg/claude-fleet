@@ -14,7 +14,7 @@
 
 import http from 'node:http';
 import os from 'node:os';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, stat, open } from 'node:fs/promises';
 import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +22,7 @@ import { dirname, join } from 'node:path';
 import { applyEvent, pruneStale, isHandledEvent } from './state.js';
 import { resolveFocus } from './focus.js';
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './guards.js';
+import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './usage.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -41,6 +42,37 @@ const HOST = process.env.FLEET_HOST || '127.0.0.1';
 const INDEX_FILE = join(ROOT, 'public', 'index.html');
 const STATE_FILE = join(ROOT, '.fleet-state.json');
 const STALE_MS = (Number(process.env.FLEET_STALE_HOURS) || 6) * 60 * 60 * 1000;
+
+/**
+ * Окно лимита Claude. Папка транскриптов и длина окна - в .env: путь машинно-зависимый,
+ * а пять часов это свойство тарифа, а не наше решение. Опрос раз в минуту: старт окна
+ * двигается только первым запросом после паузы, чаще смотреть нечего (обратный отсчёт
+ * тикает на фронте сам).
+ */
+const TRANSCRIPTS_DIR = process.env.FLEET_TRANSCRIPTS || join(os.homedir(), '.claude', 'projects');
+const USAGE_WINDOW_MS = (Number(process.env.FLEET_USAGE_HOURS) || 5) * 60 * 60 * 1000;
+/**
+ * Claude открывает окно не по секунде первого запроса, а по границе получаса вниз (сверено
+ * с `/usage`, см. usage.js). 0 отключает выравнивание, если в тарифе это изменится.
+ */
+const USAGE_ALIGN_MS = (process.env.FLEET_USAGE_ALIGN_MIN === undefined
+  ? 30
+  : Number(process.env.FLEET_USAGE_ALIGN_MIN) || 0) * 60 * 1000;
+const USAGE_POLL_MS = 60 * 1000;
+/**
+ * Потолок на первое чтение незнакомого файла. Транскрипт долгой сессии доходит до 16 МБ,
+ * такой читается целиком; лимит нужен, чтобы файл-патология не втянул в память сотни МБ.
+ */
+const USAGE_MAX_TAIL = 24 * 1024 * 1024;
+/**
+ * Единственный буфер чтения на весь процесс, аллоцируется один раз.
+ *
+ * Так и задумано: чтение потоком аллоцировало новый буфер на каждый кусок, и на 48 МБ свежих
+ * транскриптов это давало 48 МБ мусора быстрее, чем GC успевал прибирать - RSS подскакивал
+ * с 60 до 120 МБ. Сканы идут строго последовательно (флаг usageScanning), поэтому общий
+ * буфер безопасен. Мегабайта хватает: в него должна помещаться одна запись транскрипта.
+ */
+const READ_BUFFER = Buffer.allocUnsafe(1024 * 1024);
 
 /** Событие крупнее этого отбрасываем целиком: JSON нельзя распарсить по кусочку. */
 const MAX_BODY = 1024 * 1024;
@@ -155,11 +187,16 @@ function handleStats(res) {
       avgKb: +(row.bytes / row.count / 1024).toFixed(2),
     }))
     .sort((a, b) => b.maxKb - a.maxKb);
+  const cpu = process.cpuUsage();
   const body = {
     uptimeMin: +((Date.now() - stats.startedAt) / 60000).toFixed(1),
     rssMb: +(process.memoryUsage().rss / 1048576).toFixed(1),
+    // Суммарное процессорное время за всю жизнь процесса: борд стоит открытым сутками,
+    // и цену фонового опроса транскриптов иначе видно только профайлером.
+    cpuSec: +((cpu.user + cpu.system) / 1e6).toFixed(1),
     sessions: Object.keys(sessions).length,
     boards: sseClients.size,
+    usageFiles: transcriptOffsets.size,
     events: stats.events,
     totalMb: +(stats.bytes / 1048576).toFixed(2),
     snapshotKb: +(payload().length / 1024).toFixed(1),
@@ -182,9 +219,126 @@ function noteUnknownEvent(rawName) {
   if (seen === 0) log(`незнакомое событие хука: ${key} (борд его не понимает)`);
 }
 
+/**
+ * Окно лимита: одно на весь аккаунт, поэтому и состояние одно, а не по сессии.
+ * Смещения по файлам нужны, чтобы после первого разбора дочитывать только хвосты:
+ * на живых данных свежие транскрипты весят 44 МБ и разбираются 110 мс, а прирост
+ * за минуту это десятки килобайт.
+ */
+let usageWindow = null;
+let usageScanning = false;
+const transcriptOffsets = new Map();
+
+/** Файлы, которые ещё могут содержать записи текущего окна (обход дерева стоит ~2 мс). */
+async function listFreshTranscripts(now) {
+  const fresh = [];
+  let dirs;
+  try {
+    dirs = await readdir(TRANSCRIPTS_DIR, { withFileTypes: true });
+  } catch {
+    return fresh; // папки нет - Claude Code сюда не пишет, окно просто не показываем
+  }
+  for (const dir of dirs) {
+    if (!dir.isDirectory()) continue;
+    const projectDir = join(TRANSCRIPTS_DIR, dir.name);
+    let files;
+    try {
+      files = await readdir(projectDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      if (!file.isFile() || !file.name.endsWith('.jsonl')) continue;
+      const path = join(projectDir, file.name);
+      try {
+        const info = await stat(path);
+        if (isFreshTranscript(info.mtimeMs, now, USAGE_WINDOW_MS)) fresh.push({ path, size: info.size });
+      } catch {
+        // файл исчез между readdir и stat - обычное дело, сессия могла закончиться
+      }
+    }
+  }
+  return fresh;
+}
+
+/**
+ * Дочитывает хвост одного транскрипта и складывает найденные метки в stamps.
+ *
+ * Читаем потоком по кускам и разбираем их буфером (см. collectStamps): в памяти живёт
+ * highWaterMark плюс одна незавершённая строка, независимо от того, 16 МБ в файле или 200.
+ * Ранняя остановка «дочитали до старых записей - хватит» тут не нужна: замерено, что почти
+ * весь объём свежих транскриптов и так относится к последним десяти часам (48 МБ из 65).
+ */
+async function readNewStamps(file, stamps) {
+  const seen = transcriptOffsets.get(file.path);
+  // Файл короче запомненного смещения - его усекли или подменили: знакомимся заново.
+  // Метки при этом посчитаются повторно и счётчик запросов в подсказке завысится; граница
+  // окна (единственное, что стоит в шапке) не съедет - её задаёт самая ранняя метка.
+  // Транскрипты только дописываются, так что случай редкий и цена ошибки копеечная.
+  const stale = seen == null || seen > file.size;
+  const from = stale ? Math.max(0, file.size - USAGE_MAX_TAIL) : seen;
+  if (from >= file.size) return;
+
+  // Транскрипт дописывают прямо сейчас, поэтому хвост почти всегда обрывается на середине
+  // строки. Незавершённый остаток переносим в следующий кусок и не учитываем в смещении -
+  // дочитаем его следующим проходом, когда строка станет целой.
+  let handle;
+  let tail = 0; // байт незавершённой строки, перенесённых в начало буфера
+  try {
+    handle = await open(file.path, 'r');
+    let position = from;
+    while (position < file.size) {
+      const { bytesRead } = await handle.read(READ_BUFFER, tail, READ_BUFFER.length - tail, position);
+      if (!bytesRead) break;
+      position += bytesRead;
+      const view = READ_BUFFER.subarray(0, tail + bytesRead);
+      const consumed = collectStamps(view, stamps);
+      tail = view.length - consumed;
+      // Незавершённую строку переносим в начало буфера и дочитываем следующим куском.
+      if (tail > 0 && consumed > 0) READ_BUFFER.copy(READ_BUFFER, 0, consumed, view.length);
+      // Одна запись длиннее всего буфера (в tool_response попадают большие файлы): дальше
+      // копить некуда, роняем её и читаем дальше. Потеря одной метки границу окна не двигает -
+      // её задаёт самая ранняя метка, а рядом всегда есть соседние записи.
+      if (tail === READ_BUFFER.length) tail = 0;
+    }
+    transcriptOffsets.set(file.path, file.size - tail);
+  } catch {
+    // нет доступа или файл пропал - окно переживёт пропуск одного транскрипта
+  } finally {
+    await handle?.close();
+  }
+}
+
+async function scanUsage() {
+  if (usageScanning) return;
+  usageScanning = true;
+  try {
+    const fresh = await listFreshTranscripts(Date.now());
+    // Реестр смещений не должен расти вечно: выпавшие из окна свежести файлы забываем,
+    // иначе за месяцы работы в Map осядут тысячи путей давно закрытых сессий.
+    const alive = new Set(fresh.map((file) => file.path));
+    for (const path of transcriptOffsets.keys()) {
+      if (!alive.has(path)) transcriptOffsets.delete(path);
+    }
+
+    const stamps = [];
+    for (const file of fresh) await readNewStamps(file, stamps);
+
+    const next = foldStamps(usageWindow, stamps, USAGE_WINDOW_MS, USAGE_ALIGN_MS);
+    const changed = next?.start !== usageWindow?.start || next?.requests !== usageWindow?.requests;
+    usageWindow = next;
+    if (changed) broadcast();
+  } catch (error) {
+    log(`окно лимита не пересчиталось: ${error.message}`);
+  } finally {
+    usageScanning = false;
+  }
+}
+
 function payload() {
   const unknown = [...unknownEvents].map(([name, count]) => ({ name, count }));
-  return `data: ${JSON.stringify({ sessions: snapshot(), unknown })}\n\n`;
+  const usage = describeWindow(usageWindow, Date.now(), USAGE_WINDOW_MS);
+  return `data: ${JSON.stringify({ sessions: snapshot(), unknown, usage })}\n\n`;
 }
 
 function broadcast() {
@@ -269,6 +423,9 @@ async function handleEvent(req, res) {
 }
 
 function handleStream(req, res) {
+  // Борд открыли после паузы: пока его никто не смотрел, транскрипты не читались,
+  // и окно лимита успело уехать. Пересчитываем сразу, не дожидаясь тика опроса.
+  if (sseClients.size === 0) scanUsage();
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -397,6 +554,14 @@ setInterval(() => {
     persist();
   }
 }, PRUNE_INTERVAL_MS).unref();
+
+/**
+ * Пересчёт окна лимита - только пока борд кто-то смотрит. Без открытых вкладок читать
+ * транскрипты незачем: процесс должен стоять ровно на нуле, как и до этой фичи.
+ */
+setInterval(() => {
+  if (sseClients.size > 0) scanUsage();
+}, USAGE_POLL_MS).unref();
 
 // Без своего обработчика ошибка listen всплывает необработанным исключением, launchd
 // поднимает процесс заново - и так по кругу, а в логе только стопка стартовых строк.

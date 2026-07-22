@@ -114,6 +114,20 @@
     .live.on .pulse { box-shadow: 0 0 0 3px rgba(71,201,122,.18); }
     .live.off .pulse { background: var(--faint); }
 
+    /* окно лимита Claude. Плашка одна и живёт в шапке, а не в карточке: лимит привязан
+       к аккаунту, а не к проекту - все сессии во всех папках жгут общую квоту, и в каждой
+       строке это было бы одно и то же число. Цвет нейтральный намеренно: красное на борде
+       означает «нужен ты», а окно это справка, а не призыв к действию. */
+    .win { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--dim);
+      background: rgba(255,255,255,.05); border: 1px solid var(--border); border-radius: 20px;
+      padding: 4px 13px; margin-left: 10px; flex: none; cursor: help; }
+    .win b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
+    .win .at { color: var(--faint); }
+    .win.done { color: var(--faint); }
+    /* обязательно: display в классе перебивает атрибут hidden по специфичности, и пока
+       сервер не прислал окно, в шапке висела пустая пилюля-призрак */
+    .win[hidden] { display: none; }
+
     /* тумблер системных уведомлений: по умолчанию выключен, звука нет никогда.
        Нужен для случая "сижу в фуллскрине IDE" - борда не видно, даже favicon-бейджа. */
     .bell {
@@ -436,6 +450,7 @@
         <span class="word">Fleet</span>
       </span>
       <span class="live on" id="live"><span class="pulse"></span><span id="liveText">live</span></span>
+      <span class="win" id="win" hidden><span id="winLabel"></span><b id="winLeft"></b><span class="at" id="winAt"></span></span>
       <span class="unknown" id="unknown" hidden></span>
       <span class="counts" id="counts"></span>
       <button class="bell off" id="bell" type="button" aria-pressed="false" title="Уведомления выключены">
@@ -774,6 +789,53 @@
         + '. Похоже, обновился Claude Code - часть статусов может не обновляться';
     }
 
+    /* Окно лимита. Сервер шлёт только границы, обратный отсчёт двигаем сами в tickTimes:
+       иначе значение висело бы неизменным между событиями хука. Часы конца окна считаем
+       один раз здесь и держим в dataset - toLocaleTimeString в посекундном тике не нужен. */
+    function renderUsage() {
+      const el = document.getElementById('win');
+      const u = data.usage;
+      el.hidden = !u;
+      if (!u) return;
+      el.dataset.ends = u.endsAt;
+      el.dataset.until = clock(u.endsAt);
+      el.title = 'Окно лимита Claude, одно на весь аккаунт: все сессии во всех проектах'
+        + ' и claude.ai жгут общую квоту. Стартовало в ' + clock(u.startedAt)
+        + ', запросов внутри: ' + u.requests
+        + '. Считается по локальным транскриптам, сессии из браузера сюда не попадают';
+      paintUsage();
+    }
+
+    /* Формулировка прямая: «окно до 19:34» не объясняло, чьё это окно и что случится в 19:34.
+       Плашка должна читаться с одного взгляда и без знания внутренностей борда. */
+    function paintUsage() {
+      const el = document.getElementById('win');
+      if (el.hidden) return;
+      const left = Number(el.dataset.ends) - Date.now();
+      const open = left > 0;
+      setText(document.getElementById('winLabel'), open ? 'до сброса лимита Claude' : 'лимит Claude свежий');
+      setText(document.getElementById('winLeft'), open ? leftText(left) : '');
+      setText(document.getElementById('winAt'), open ? 'в ' + el.dataset.until : 'счётчик пойдёт со следующего запроса');
+      el.classList.toggle('done', !open);
+    }
+
+    // присваивание textContent дёргает перерисовку узла даже тем же значением, а тик идёт
+    // раз в секунду круглосуточно - сверяем перед записью
+    function setText(node, value) {
+      if (node.textContent !== value) node.textContent = value;
+    }
+
+    function clock(ts) {
+      return new Date(ts).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function leftText(ms) {
+      const m = Math.max(0, Math.floor(ms / 60000));
+      if (m < 60) return m + ' мин';
+      const h = Math.floor(m / 60);
+      return m % 60 ? h + ' ч ' + (m % 60) + ' мин' : h + ' ч';
+    }
+
     function plural(n, one, few, many) {
       const m10 = n % 10, m100 = n % 100;
       if (m10 === 1 && m100 !== 11) return one;
@@ -813,6 +875,7 @@
         const ts = Number(el.dataset.ts) || 0;
         el.classList.toggle('stale', busy && ts > 0 && now - ts > IDLE_MS);
       }
+      paintUsage();
     }
 
     /* Системные уведомления. Выключены по умолчанию и всегда беззвучные: борд задумывался
@@ -939,6 +1002,7 @@
         // отдельно от render: незнакомое событие не меняет карточки, а значит и сигнатуру,
         // и предупреждение иначе не появилось бы до следующего изменения на борде
         renderUnknown();
+        renderUsage();
         setLive(true);
       };
       es.onerror = () => setLive(false);
