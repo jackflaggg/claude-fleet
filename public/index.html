@@ -21,6 +21,7 @@
       --red: #ff5d63;
       --amber: #ffb454;
       --green: #47c97a;
+      --violet: #a99bff;   /* чип git-worktree: заметен, но не спорит с красным «ждут тебя» */
       --border: #36445e;
       --border-hi: #5a6d8c;
       --radius: 14px;
@@ -273,6 +274,18 @@
     /* хеш сессии сжимается раньше имени проекта: без flex-сжатия он выдавливал бы бейдж
        на текст соседа (элементы с flex:none просто накладываются друг на друга) */
     .sid { font-size: 12px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; flex: none; white-space: nowrap; }
+    /* Сессия в git-worktree стоит в группе родительского проекта (это та же работа в
+       изолированной копии), а имя копии называет этот чип. Рамка пунктирная намеренно:
+       со сплошной он читался бы как метка терминала, а это разные вещи. */
+    .wtree { font-size: 11.5px; color: var(--violet); background: rgba(169, 155, 255, .10);
+             border: 1px dashed rgba(169, 155, 255, .45); border-radius: 5px;
+             padding: 0 6px; white-space: nowrap; flex: 0 1 auto; min-width: 4em; max-width: 14em;
+             overflow: hidden; text-overflow: ellipsis;
+             font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+    .row .wtree { margin-right: 8px; }
+    /* В шапке карточки на всех места нет, а элементы с flex:none накладываются друг на друга.
+       Хеш уступает: имя копии объясняет, почему в проекте две сессии, а хеш - восемь цифр. */
+    .card .pname:has(.wtree) .sid { display: none; }
     /* места мало - хеш и возраст уходят первыми, имя проекта и статус остаются */
     @container (max-width: 430px) { .dur { display: none; } }
     @container (max-width: 360px) { .sid { display: none; } }
@@ -589,11 +602,16 @@
       ));
     }
     function sig(sessions) {
-      return sessions.map((c) => [c.sessionId, c.project, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.waitingSince].join('')).join('');
+      return sessions.map((c) => [c.sessionId, c.project, c.worktree, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.waitingSince].join('')).join('');
     }
     function badgeFor(c) {
       if (c.status === 'waiting') return { cls: 'waiting', label: WAIT_BADGE[c.reason] || 'ждёт тебя' };
       return STATUS_META[c.status] || STATUS_META.ready;
+    }
+    /* worktree стоит в группе родительского проекта, поэтому имя копии надо назвать в самой
+       карточке/строке - иначе две сессии одного проекта выглядят как правки одного и того же */
+    function wtreeHtml(c) {
+      return c.worktree ? `<span class="wtree" title="git worktree">${esc(c.worktree)}</span>` : '';
     }
     function cardHtml(c) {
       const b = badgeFor(c);
@@ -623,7 +641,7 @@
         : `<span class="badge ${b.cls}">${b.label}</span>`;
       return `<i class="glow"></i><button class="kill" data-kill="${esc(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
         <div class="chead">
-          <span class="pname"><span class="proj">${esc(c.project)}</span><span class="sid">${sid}</span>${durHtml}</span>
+          <span class="pname"><span class="proj">${esc(c.project)}</span>${wtreeHtml(c)}<span class="sid">${sid}</span>${durHtml}</span>
           ${badgeHtml}
         </div>
         ${titleHtml}
@@ -646,7 +664,7 @@
       const term = c.terminal ? `<span class="term" style="--tc:${termColor(c.terminal)}">${esc(c.terminal)}</span>` : '<span class="src">claude-code</span>';
       return `<button class="kill" data-kill="${esc(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
         <span class="sid">${sid}</span>
-        <span class="rtask">${esc(c.title || '')}</span>
+        <span class="rtask">${wtreeHtml(c)}${esc(c.title || '')}</span>
         ${toolCell}
         <span class="badge ${b.cls}">${b.label}</span>
         ${durCell}
@@ -661,7 +679,7 @@
     const cardEls = new Map();
 
     function cardSig(c) {
-      return [c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.project, c.createdAt].join('');
+      return [c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.project, c.worktree, c.createdAt].join('');
     }
 
     /* shape - карточка (ждущие) или строка (в работе). Сессия переходит между секциями,

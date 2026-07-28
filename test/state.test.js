@@ -15,6 +15,20 @@ test('SessionStart создаёт карточку с проектом из cwd'
   assert.equal(state.s1.updatedAt, NOW);
 });
 
+test('сессия в git-worktree остаётся в группе родительского проекта', () => {
+  const state = applyEvent({}, ev({
+    hook_event_name: 'SessionStart',
+    cwd: '/Users/x/Projects/LearningMy/.claude/worktrees/fix+agent-harness',
+  }), NOW);
+  assert.equal(state.s1.project, 'LearningMy', 'иначе на борде заводится проект-однодневка');
+  assert.equal(state.s1.worktree, 'fix+agent-harness', 'но имя копии видно - работ в проекте две');
+});
+
+test('обычная сессия worktree не получает', () => {
+  const state = applyEvent({}, ev({ hook_event_name: 'SessionStart' }), NOW);
+  assert.equal(state.s1.worktree, null);
+});
+
 test('UserPromptSubmit переводит в thinking и кладёт промпт в заголовок', () => {
   let state = applyEvent({}, ev({ hook_event_name: 'SessionStart' }), NOW);
   state = applyEvent(state, ev({ hook_event_name: 'UserPromptSubmit', prompt: '  почини баг с формулами  ' }), NOW + 1);
@@ -192,6 +206,25 @@ test('без notification_type причина по-прежнему опреде
   assert.equal(question.s1.reason, WAIT_REASON.QUESTION);
 });
 
+test('завершение фонового агента не зовёт человека к сессии', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }), NOW);
+  state = applyEvent(state, ev({
+    hook_event_name: 'Notification',
+    notification_type: 'agent_completed',
+    message: 'Определение текущего этапа проекта failed',
+  }), NOW + 1000);
+  assert.equal(state.s1.status, STATUS.TOOL, 'закончился агент, а сессия работает дальше');
+  assert.equal(state.s1.waitingSince, null);
+  // у фонового агента свой session_id: уведомление приходит в пустую карточку-однодневку,
+  // и она не должна становиться красной только потому, что агент завершился
+  const lone = applyEvent({}, ev({
+    hook_event_name: 'Notification',
+    notification_type: 'agent_completed',
+    message: 'Определение текущего этапа проекта failed',
+  }), NOW);
+  assert.notEqual(lone.s1.status, STATUS.WAITING, 'карточка агента никого не ждёт');
+});
+
 test('информационное уведомление не красит карточку в "ждут тебя"', () => {
   let state = applyEvent({}, ev({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } }), NOW);
   state = applyEvent(state, ev({ hook_event_name: 'Notification', notification_type: 'auth_success', message: 'Login successful' }), NOW + 1);
@@ -353,4 +386,24 @@ test('pruneStale: карточка без updatedAt считается прот�
   const sessions = { nold: { sessionId: 'nold' } };
   const pruned = pruneStale(sessions, NOW, 6 * HOUR);
   assert.equal(pruned.nold, undefined);
+});
+
+// Пустая карточка - это фоновый агент со своим session_id, остаток от перехода в worktree
+// или брошенная сессия: сказать ей нечего, а место на борде она занимает наравне с работой.
+test('pruneStale: пустая карточка убирается по короткому порогу', () => {
+  const MINUTE = 60 * 1000;
+  const sessions = {
+    blank: { sessionId: 'blank', updatedAt: NOW - 30 * MINUTE },
+    titled: { sessionId: 'titled', title: 'починить сборку', updatedAt: NOW - 30 * MINUTE },
+    busy: { sessionId: 'busy', tool: 'Bash', updatedAt: NOW - 30 * MINUTE },
+  };
+  const pruned = pruneStale(sessions, NOW, 6 * HOUR, 15 * MINUTE);
+  assert.equal(pruned.blank, undefined, 'ни задачи, ни инструмента - показывать нечего');
+  assert.ok(pruned.titled, 'сессия с задачей живёт по общему порогу');
+  assert.ok(pruned.busy, 'сессия за инструментом тоже');
+});
+
+test('pruneStale: без короткого порога поведение прежнее', () => {
+  const sessions = { blank: { sessionId: 'blank', updatedAt: NOW - 30 * 60 * 1000 } };
+  assert.ok(pruneStale(sessions, NOW, 6 * HOUR).blank, 'четвёртый аргумент необязателен');
 });

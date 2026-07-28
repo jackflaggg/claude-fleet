@@ -90,6 +90,23 @@ function projectFromCwd(cwd) {
   return segments[segments.length - 1] || 'unknown';
 }
 
+/**
+ * Сессия в git-worktree живёт внутри родительского проекта (`.claude/worktrees/<имя>`), и по
+ * последнему сегменту пути выглядела на борде отдельным проектом со своей группой и своей
+ * монограммой. Это та же работа в изолированной копии: группы плодились на ровном месте,
+ * а связь с родителем терялась. Имя ветки-копии оставляем отдельным полем - оно объясняет,
+ * почему в одном проекте вдруг две сессии правят одно и то же.
+ */
+const WORKTREE_MARK = '/.claude/worktrees/';
+
+function placeFromCwd(cwd) {
+  if (typeof cwd !== 'string' || !cwd) return { project: 'unknown', worktree: null };
+  const at = cwd.indexOf(WORKTREE_MARK);
+  if (at < 0) return { project: projectFromCwd(cwd), worktree: null };
+  const name = cwd.slice(at + WORKTREE_MARK.length).replace(/\/+$/, '').split('/')[0];
+  return { project: projectFromCwd(cwd.slice(0, at)), worktree: name || null };
+}
+
 /** bundle-id приложения-терминала -> человекочитаемое имя для метки на карточке. */
 const TERMINAL_NAMES = {
   'com.jetbrains.WebStorm': 'WebStorm',
@@ -169,17 +186,24 @@ const NOTIFICATION_REASON = {
   idle_prompt: WAIT_REASON.QUESTION,
   agent_needs_input: WAIT_REASON.QUESTION,
   elicitation_dialog: WAIT_REASON.QUESTION,
-  agent_completed: WAIT_REASON.FINISHED,
 };
 
 /**
  * Уведомления, которые ничего от тебя не хотят (успешный логин, закрытый диалог). Раньше
  * любой Notification красил карточку в красное - и борд звал к сессии, которой ты не нужен.
+ *
+ * agent_completed здесь по той же причине, по которой статус не трогает SubagentStop:
+ * закончился фоновый агент, а сессия работает дальше. Причём у фонового агента свой
+ * session_id, так что уведомление прилетает не в родительскую карточку, а в собственную -
+ * пустую, без промпта и без терминала за спиной. Пока оно значило "закончил ход", такая
+ * карточка навсегда зависала красной в "ждут тебя" и топила там настоящие. Реальный конец
+ * хода даёт Stop, он карточку и красит.
  */
 const INFO_NOTIFICATIONS = new Set([
   'auth_success',
   'elicitation_complete',
   'elicitation_response',
+  'agent_completed',
 ]);
 
 function notificationKind(event) {
@@ -219,9 +243,11 @@ export function applyEvent(sessions, event, now) {
     return next;
   }
 
+  const place = placeFromCwd(event.cwd);
   const previous = next[id] ?? {
     sessionId: id,
-    project: projectFromCwd(event.cwd),
+    project: place.project,
+    worktree: place.worktree,
     cwd: typeof event.cwd === 'string' ? event.cwd : '',
     appId: null,
     terminal: null,
@@ -241,7 +267,8 @@ export function applyEvent(sessions, event, now) {
   if (!card.createdAt) card.createdAt = now;
   if (typeof event.cwd === 'string' && event.cwd) {
     card.cwd = event.cwd;
-    card.project = projectFromCwd(event.cwd);
+    card.project = place.project;
+    card.worktree = place.worktree;
   }
   // bundle-id приложения-терминала, где живёт сессия (для клика + метки на карточке).
   if (typeof event.appId === 'string' && event.appId) {
@@ -374,17 +401,29 @@ export function isWaiting(card) {
 }
 
 /**
- * Возвращает набор сессий без протухших - тех, что не обновлялись дольше staleMs.
+ * Карточка, которая за всю жизнь не показала ни задачи, ни инструмента. Так выглядит не
+ * работа, а мусор: фоновый агент со своим session_id, остаток от перехода в worktree,
+ * забытая пустая сессия. Сообщить ей нечего, поэтому держать её на борде наравне с живой
+ * работой незачем - а на первом же настоящем событии она вернётся сама.
+ */
+function isBlank(card) {
+  return !card?.title && !card?.tool;
+}
+
+/**
+ * Возвращает набор сессий без протухших - тех, что не обновлялись дольше staleMs
+ * (пустые - дольше blankMs, он короче).
  * Нужна, потому что карточка удаляется по SessionEnd, а оно приходит только на аккуратный
  * выход (/exit). При закрытии окна терминала, kill или крэше события нет, и зомби-карточка
- * иначе висела бы на борде вечно. Чистая функция (время и порог - снаружи), вызывается
+ * иначе висела бы на борде вечно. Чистая функция (время и пороги - снаружи), вызывается
  * по таймеру из server.js. Возвращает новый объект; если ничего не протухло - все прежние
  * карточки на месте (сравнивай размеры на стороне вызова, чтобы не слать лишний broadcast).
  */
-export function pruneStale(sessions, now, staleMs) {
+export function pruneStale(sessions, now, staleMs, blankMs = staleMs) {
   const next = {};
   for (const [id, card] of Object.entries(sessions)) {
-    if (now - (card?.updatedAt ?? 0) < staleMs) next[id] = card;
+    const limit = isBlank(card) ? blankMs : staleMs;
+    if (now - (card?.updatedAt ?? 0) < limit) next[id] = card;
   }
   return next;
 }

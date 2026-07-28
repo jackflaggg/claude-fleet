@@ -42,6 +42,9 @@ const HOST = process.env.FLEET_HOST || '127.0.0.1';
 const INDEX_FILE = join(ROOT, 'public', 'index.html');
 const STATE_FILE = join(ROOT, '.fleet-state.json');
 const STALE_MS = (Number(process.env.FLEET_STALE_HOURS) || 6) * 60 * 60 * 1000;
+// Отдельный, куда более короткий порог для карточек без задачи и без инструмента: за ними
+// нет работы, которую можно потерять (см. isBlank в state.js).
+const BLANK_MS = (Number(process.env.FLEET_BLANK_MINUTES) || 15) * 60 * 1000;
 
 /**
  * Окно лимита Claude. Папка транскриптов и длина окна - в .env: путь машинно-зависимый,
@@ -109,19 +112,15 @@ const WEBSTORM_APP = process.env.FLEET_WEBSTORM_APP || 'WebStorm';
 /**
  * Восстанавливает состояние с диска, но только если файл записан ПОСЛЕ последней загрузки
  * системы. Если раньше - значит был ребут, все прежние сессии мертвы, начинаем с чистого.
- * Дополнительно отсекаем карточки старше STALE_MS.
+ * Дополнительно отсекаем карточки старше STALE_MS (пустые - старше BLANK_MS), теми же
+ * порогами, что и рантайм-уборка зомби.
  */
 function loadState() {
   try {
     const bootMs = Date.now() - os.uptime() * 1000;
     if (statSync(STATE_FILE).mtimeMs < bootMs) return {};
     const saved = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
-    const now = Date.now();
-    const fresh = {};
-    for (const [id, card] of Object.entries(saved)) {
-      if (card && now - (card.updatedAt || 0) < STALE_MS) fresh[id] = card;
-    }
-    return fresh;
+    return pruneStale(saved, Date.now(), STALE_MS, BLANK_MS);
   } catch {
     return {};
   }
@@ -541,13 +540,13 @@ const server = http.createServer((req, res) => {
 
 /**
  * Периодическая уборка зомби-карточек: сессий, чей терминал закрыли/убили без SessionEnd.
- * Порог тот же STALE_MS, что и при восстановлении с диска. Активная сессия шлёт события хуков
+ * Пороги те же, что и при восстановлении с диска. Активная сессия шлёт события хуков
  * куда чаще, поэтому под нож попадают только реально мёртвые. .unref() - таймер не держит
  * процесс живым сам по себе.
  */
 const PRUNE_INTERVAL_MS = 5 * 60 * 1000;
 setInterval(() => {
-  const pruned = pruneStale(sessions, Date.now(), STALE_MS);
+  const pruned = pruneStale(sessions, Date.now(), STALE_MS, BLANK_MS);
   if (Object.keys(pruned).length !== Object.keys(sessions).length) {
     sessions = pruned;
     broadcast();
