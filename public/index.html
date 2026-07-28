@@ -915,6 +915,23 @@
         : 'Уведомления выключены';
     }
 
+    /* Одно место, где создаётся системное уведомление: и пробное при включении, и настоящие
+       про ждущие сессии. tag общий - новое заменяет предыдущее, а не копится стопкой. */
+    function postNotification(title, body, onClick) {
+      try {
+        const note = new Notification(title, { body, tag: 'fleet-waiting', silent: true });
+        note.onclick = () => {
+          window.focus();
+          if (onClick) onClick();
+          note.close();
+        };
+        return true;
+      } catch {
+        // уведомления могли отключить на уровне системы уже после выдачи разрешения
+        return false;
+      }
+    }
+
     async function toggleNotify() {
       if (notifyOn) {
         notifyOn = false;
@@ -924,6 +941,13 @@
         if (permission === 'default') permission = await Notification.requestPermission();
         if (permission !== 'granted') { toast('Уведомления запрещены в настройках браузера'); return; }
         notifyOn = true;
+        // Пробное уведомление сразу по клику. Настоящие приходят только когда сессия входит
+        // в ожидание, то есть неизвестно когда: до тех пор непонятно, работают они вообще или
+        // нет. Оно же заставляет macOS показать свой диалог - пока браузер не отправил ни
+        // одного уведомления, его нет даже в системном списке «Уведомления», и разрешить
+        // ему что-либо там просто негде.
+        postNotification('Уведомления включены', 'Позову, когда сессия будет ждать тебя');
+        toast('Отправил пробное уведомление. Не видно - разреши браузеру уведомления в Системных настройках');
       }
       localStorage.setItem(NOTIFY_KEY, notifyOn ? '1' : '0');
       syncBell();
@@ -939,17 +963,7 @@
       const one = fresh.length === 1 ? fresh[0] : null;
       const title = one ? `${one.project} ${WAIT_BADGE[one.reason] || 'ждёт тебя'}` : `${fresh.length} сессии ждут тебя`;
       const body = one ? (one.note || (one.tool ? `${one.tool}${one.toolInfo ? ' · ' + one.toolInfo : ''}` : one.title || '')) : fresh.map((c) => c.project).join(', ');
-      try {
-        // tag: новое уведомление заменяет предыдущее, а не копится стопкой в центре уведомлений
-        const note = new Notification(title, { body, tag: 'fleet-waiting', silent: true });
-        note.onclick = () => {
-          window.focus();
-          if (one) focusSession(one.sessionId);
-          note.close();
-        };
-      } catch {
-        // уведомления могли отключить на уровне системы уже после выдачи разрешения
-      }
+      postNotification(title, body, one ? () => focusSession(one.sessionId) : null);
     }
 
     let toastTimer = null;
