@@ -18,7 +18,7 @@ import { readFile, readdir, stat, open } from 'node:fs/promises';
 import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, extname, join, resolve, sep } from 'node:path';
 import { applyEvent, pruneStale, isHandledEvent } from './state.js';
 import { resolveFocus } from './focus.js';
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './guards.js';
@@ -39,7 +39,12 @@ if (existsSync(ENV_FILE)) {
 
 const PORT = Number(process.env.FLEET_PORT) || 4319;
 const HOST = process.env.FLEET_HOST || '127.0.0.1';
-const INDEX_FILE = join(ROOT, 'public', 'index.html');
+const PUBLIC_DIR = join(ROOT, 'public');
+const INDEX_FILE = join(PUBLIC_DIR, 'index.html');
+const STATIC_TYPES = new Map([
+  ['.css', 'text/css; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+]);
 const STATE_FILE = join(ROOT, '.fleet-state.json');
 const STALE_MS = (Number(process.env.FLEET_STALE_HOURS) || 6) * 60 * 60 * 1000;
 // Отдельный, куда более короткий порог для карточек без задачи и без инструмента: за ними
@@ -502,6 +507,35 @@ async function handleIndex(res) {
   }
 }
 
+/**
+ * Статические клиентские слои. Разрешаем только известные типы внутри public: серверу не
+ * нужен универсальный файловый браузер, а проверка корня не даёт URL выйти через ../.
+ */
+async function handlePublicAsset(res, pathname) {
+  let relativePath;
+  try {
+    relativePath = decodeURIComponent(pathname).replace(/^\/+/, '');
+  } catch {
+    res.writeHead(400).end('bad path');
+    return;
+  }
+  const file = resolve(PUBLIC_DIR, relativePath);
+  const contentType = STATIC_TYPES.get(extname(file));
+  if (!file.startsWith(PUBLIC_DIR + sep) || !contentType) {
+    res.writeHead(404).end('not found');
+    return;
+  }
+  try {
+    const content = await readFile(file);
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Cache-Control': 'no-cache',
+    }).end(content);
+  } catch {
+    res.writeHead(404).end('not found');
+  }
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
@@ -533,6 +567,9 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     return handleIndex(res);
+  }
+  if (req.method === 'GET' && (url.pathname.startsWith('/assets/') || url.pathname.startsWith('/js/'))) {
+    return handlePublicAsset(res, url.pathname);
   }
 
   res.writeHead(404).end('not found');
