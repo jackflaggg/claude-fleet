@@ -34,6 +34,7 @@ export const HANDLED_EVENTS = new Set([
   'SessionStart',
   'UserPromptSubmit',
   'PreToolUse',
+  'PermissionRequest',
   'PostToolUse',
   'PostToolUseFailure',
   'Notification',
@@ -234,9 +235,13 @@ function waitReasonFromNotification(event) {
  */
 export function applyEvent(sessions, event, now) {
   const next = { ...sessions };
-  const id = event?.session_id;
+  const sourceId = event?.session_id;
   const eventName = event?.hook_event_name;
-  if (!id || !eventName) return next;
+  if (!sourceId || !eventName) return next;
+  const agent = event?.agent === 'codex' ? 'codex' : 'claude';
+  // Пространства id разделены явно: схема обоих агентов использует session_id, и хотя UUID
+  // почти наверняка не столкнутся, карточка и DELETE/focus не должны зависеть от «почти».
+  const id = agent === 'codex' ? `codex:${sourceId}` : sourceId;
 
   if (eventName === 'SessionEnd') {
     delete next[id];
@@ -246,6 +251,8 @@ export function applyEvent(sessions, event, now) {
   const place = placeFromCwd(event.cwd);
   const previous = next[id] ?? {
     sessionId: id,
+    sourceSessionId: sourceId,
+    agent,
     project: place.project,
     worktree: place.worktree,
     cwd: typeof event.cwd === 'string' ? event.cwd : '',
@@ -261,6 +268,9 @@ export function applyEvent(sessions, event, now) {
   };
 
   const card = { ...previous, updatedAt: now };
+  // Старый персист появился до поддержки нескольких агентов. Отсутствующее поле всегда
+  // означает Claude: такие карточки должны пережить обновление без миграции файла состояния.
+  if (!card.agent) card.agent = agent;
   // момент, когда карточку впервые увидели; ставим один раз и не трогаем - для «идёт N мин».
   // Проставляем здесь (а не в дефолте выше), чтобы карточки, поднятые с диска до появления
   // поля, тоже получили его на ближайшем событии, а не остались навсегда без возраста.
@@ -302,6 +312,15 @@ export function applyEvent(sessions, event, now) {
       card.status = STATUS.TOOL;
       card.reason = null;
       card.note = null;
+      if (typeof event.tool_name === 'string') {
+        card.tool = event.tool_name;
+        card.toolInfo = toolTarget(event.tool_name, event.tool_input);
+      }
+      break;
+    case 'PermissionRequest':
+      card.status = STATUS.WAITING;
+      card.reason = WAIT_REASON.PERMISSION;
+      card.note = clip(event.tool_input?.description, MAX_NOTE) || null;
       if (typeof event.tool_name === 'string') {
         card.tool = event.tool_name;
         card.toolInfo = toolTarget(event.tool_name, event.tool_input);

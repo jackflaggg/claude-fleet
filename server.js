@@ -415,6 +415,10 @@ async function handleEvent(req, res) {
   // bundle-id терминала сессии приходит отдельным заголовком (report.sh не трогает тело).
   const appHeader = req.headers['x-fleet-app'];
   if (typeof appHeader === 'string' && appHeader) event.appId = appHeader;
+  // Тело hook-события у Claude и Codex почти одинаковое. Источник задаёт наш репортёр
+  // отдельным заголовком, чтобы не переписывать/не буферизовать JSON на горячем пути.
+  const agentHeader = req.headers['x-fleet-agent'];
+  if (agentHeader === 'codex') event.agent = 'codex';
 
   if (event?.hook_event_name) {
     noteEventSize(event.hook_event_name, raw.length);

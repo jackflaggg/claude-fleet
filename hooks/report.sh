@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Пробрасывает JSON события хука Claude Code (stdin) в локальный процесс Fleet.
+# Пробрасывает JSON события хуков Claude Code и Codex (stdin) в локальный процесс Fleet.
 # Требование: никогда не блокировать и не ронять сессию.
 # Поэтому короткие таймауты и безусловный exit 0 - если сервер не поднят,
 # curl мгновенно упрётся в connection refused и мы просто выходим.
@@ -24,6 +24,7 @@ if [ -z "$PORT" ] && [ -r "$ENV_FILE" ]; then
   done < "$ENV_FILE"
 fi
 PORT="${PORT:-4319}"
+AGENT="${FLEET_AGENT:-claude}"
 
 # bundle-id приложения-терминала, где живёт сессия (com.jetbrains.WebStorm / org.alacritty /
 # com.googlecode.iterm2 / com.apple.Terminal). По нему борд решает куда возвращать по клику.
@@ -32,5 +33,9 @@ curl -s -o /dev/null \
   -X POST "http://localhost:${PORT}/event" \
   -H 'Content-Type: application/json' \
   -H "X-Fleet-App: ${__CFBundleIdentifier:-}" \
+  -H "X-Fleet-Agent: ${AGENT}" \
   --data-binary @- >/dev/null 2>&1 || true
+# Stop/SubagentStop в Codex ожидают JSON-ответ hook-команды. Пустой объект ничего не
+# меняет в ходе агента; printf встроен в bash и не добавляет ни процесса, ни заметной цены.
+if [ "$AGENT" = "codex" ]; then printf '{}\n'; fi
 exit 0

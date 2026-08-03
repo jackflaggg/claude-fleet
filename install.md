@@ -4,14 +4,15 @@
 ./scripts/install.sh
 ```
 
-Скрипт делает всё: создаёт `.env` из шаблона, дописывает хуки в `~/.claude/settings.json`,
+Скрипт делает всё: создаёт `.env` из шаблона, дописывает хуки в `~/.claude/settings.json`
+и `~/.codex/hooks.json`,
 генерирует launchd-агент и перезагружает его. Идемпотентный - гоняй повторно после переезда
 папки или обновления node, дубликатов не будет.
 
 Что важно знать про него:
 
-- **чужие хуки не трогает.** Настройки мержатся через node, перед записью кладётся бэкап
-  `~/.claude/settings.json.bak`. Хуки других тулов в тех же событиях остаются на месте.
+- **чужие хуки не трогает.** Настройки мержатся через node, перед записью кладутся бэкапы
+  `~/.claude/settings.json.bak` и `~/.codex/hooks.json.bak`. Хуки других тулов остаются на месте.
 - **пути не зашиты.** Путь к репозиторию берётся от расположения самого скрипта, node ищется
   по алиасу fnm `default` (он переживает обновления версий), и только если его нет - по `PATH`.
   Если в итоге выбран временный путь `fnm_multishells`, скрипт предупредит: такой путь
@@ -50,7 +51,32 @@ cp .env.example .env   # при желании поправь порт/пути 
 Хуки из разных источников (глобальные + проектные `.claude/settings.json`) складываются,
 а не заменяют друг друга - существующие проектные хуки продолжат работать.
 
-## 3. Автозапуск через launchd
+## 3. Хуки в `~/.codex/hooks.json`
+
+Установщик добавляет официальный набор lifecycle hooks Codex: `SessionStart`,
+`UserPromptSubmit`, `PreToolUse`, `PermissionRequest`, `PostToolUse`, `PreCompact`,
+`PostCompact`, `Stop` и `SessionEnd`. Команда та же, но с маркером источника:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "hooks": [{
+        "type": "command",
+        "command": "FLEET_AGENT=codex \"/absolute/path/hooks/report.sh\"",
+        "timeout": 1
+      }]
+    }]
+  }
+}
+```
+
+После установки открой `/hooks` в Codex и один раз доверь новые команды Fleet. Codex
+проверяет hash пользовательских command hooks и до подтверждения намеренно их пропускает.
+Внутренние rollout JSONL не читаются: официальный hook-интерфейс стабильнее и не создаёт
+фоновой нагрузки. Схема и правила доверия: [Codex Hooks](https://learn.chatgpt.com/docs/hooks).
+
+## 4. Автозапуск через launchd
 
 Node ставится через fnm, поэтому используем стабильный путь дефолт-алиаса, а не
 сессионный multishell-путь.
@@ -114,7 +140,7 @@ launchctl bootout gui/$(id -u)/com.rasulkiller.claude-fleet
 Если обновишь версию node через fnm и путь дефолт-алиаса переедет - поправить
 `ProgramArguments` в plist и перезагрузить агент (`bootout` + `bootstrap`).
 
-## 4. Открыть борд
+## 5. Открыть борд
 
 ```bash
 ./scripts/board.sh          # не поднимает второе окно, если борд уже открыт
@@ -128,7 +154,7 @@ launchctl bootout gui/$(id -u)/com.rasulkiller.claude-fleet
 echo "alias fleet='/Users/rasulkiller/Projects/claude-fleet/scripts/board.sh'" >> ~/.zshrc
 ```
 
-## 5. Автооткрытие борда при логине
+## 6. Автооткрытие борда при логине
 
 `install.sh` ставит второй агент, `com.rasulkiller.claude-fleet-board`: при входе в систему
 он поднимает окно борда. Выключается через `.env`:
@@ -163,7 +189,7 @@ launchctl bootout gui/$(id -u)/com.rasulkiller.claude-fleet-board
 
 ## Проверка, что хуки живые
 
-Открой любую сессию Claude Code, отправь любой промпт - в течение секунды на борде
+Открой сессию Claude Code и сессию Codex, отправь в каждой любой промпт — в течение секунды на борде
 появится карточка проекта. Если нет - глянь `fleet.log` и что сервер слушает 4319.
 
 ## Звук и уведомления

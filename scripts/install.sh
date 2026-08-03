@@ -12,6 +12,7 @@ BOARD_LABEL="$LABEL-board"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 BOARD_PLIST="$HOME/Library/LaunchAgents/$BOARD_LABEL.plist"
 SETTINGS="$HOME/.claude/settings.json"
+CODEX_HOOKS="$HOME/.codex/hooks.json"
 HOOK="$ROOT/hooks/report.sh"
 
 say() { printf '%s\n' "$*"; }
@@ -121,7 +122,60 @@ writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
 console.log(added ? `хуки: добавил ${added} шт. (бэкап: settings.json.bak)` : 'хуки: уже на месте');
 NODE
 
-# 4. launchd-агент -----------------------------------------------------------
+# 4. Хуки Codex ---------------------------------------------------------------
+# Codex официально поддерживает ту же lifecycle-модель, поэтому используем push-события,
+# а не поллинг ~/.codex/sessions. В простое это ровно ноль CPU/IO/RAM.
+mkdir -p "$(dirname "$CODEX_HOOKS")"
+"$NODE_BIN" - "$CODEX_HOOKS" "$HOOK" <<'NODE'
+const { readFileSync, writeFileSync, existsSync, copyFileSync } = require('node:fs');
+const [settingsPath, hookPath] = process.argv.slice(2);
+const command = `FLEET_AGENT=codex "${hookPath.replaceAll('"', '\\"')}"`;
+const EVENTS = [
+  ['SessionStart', null],
+  ['UserPromptSubmit', null],
+  ['PreToolUse', '*'],
+  ['PermissionRequest', '*'],
+  ['PostToolUse', '*'],
+  ['Stop', null],
+  ['PreCompact', '*'],
+  ['PostCompact', '*'],
+  ['SessionEnd', null],
+];
+
+let settings = {};
+const existed = existsSync(settingsPath);
+if (existed) {
+  try {
+    settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+  } catch (error) {
+    console.error(`hooks.json Codex не парсится (${error.message}) - ничего не меняю`);
+    process.exit(1);
+  }
+  copyFileSync(settingsPath, `${settingsPath}.bak`);
+}
+
+settings.description ??= 'Lifecycle hooks, including local Fleet dashboard reporting.';
+settings.hooks ??= {};
+let added = 0;
+for (const [event, matcher] of EVENTS) {
+  settings.hooks[event] ??= [];
+  const already = settings.hooks[event].some((group) =>
+    (group?.hooks ?? []).some((hook) => hook?.command === command),
+  );
+  if (already) continue;
+  const group = { hooks: [{ type: 'command', command, timeout: 1 }] };
+  if (matcher) group.matcher = matcher;
+  settings.hooks[event].push(group);
+  added += 1;
+}
+
+writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+console.log(added
+  ? `хуки Codex: добавил ${added} шт. (подтверди один раз через /hooks${existed ? '; бэкап: hooks.json.bak' : ''})`
+  : 'хуки Codex: уже на месте');
+NODE
+
+# 5. launchd-агент -----------------------------------------------------------
 mkdir -p "$(dirname "$PLIST")"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -166,10 +220,16 @@ say "plist записан: $PLIST"
 
 # bootout может честно вернуть ошибку "агент не загружен" - это не повод падать
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+# macOS иногда отвечает EIO, если bootstrap попал в короткое окно, пока bootout ещё
+# освобождает job. Один повтор через секунду закрывает гонку; бесконечной петли здесь нет.
+if ! launchctl bootstrap "gui/$(id -u)" "$PLIST"; then
+  say "launchd ещё освобождает агент, повторяю запуск через секунду"
+  sleep 1
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+fi
 say "агент перезагружен"
 
-# 5. Автозапуск окна борда ---------------------------------------------------
+# 6. Автозапуск окна борда ---------------------------------------------------
 # Отдельным агентом, а не строкой в основном: борд можно закрыть и открыть заново,
 # не трогая сервер, а сервер пережить перезагрузку без окна.
 if [ "$(env_value FLEET_AUTOOPEN 1)" = "1" ]; then

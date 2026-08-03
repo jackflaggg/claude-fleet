@@ -13,6 +13,41 @@ test('SessionStart создаёт карточку с проектом из cwd'
   assert.equal(state.s1.project, 'school-back');
   assert.equal(state.s1.status, STATUS.READY);
   assert.equal(state.s1.updatedAt, NOW);
+  assert.equal(state.s1.agent, 'claude');
+});
+
+test('Codex использует отдельное пространство id и общую модель карточки', () => {
+  const state = applyEvent({}, ev({
+    agent: 'codex',
+    hook_event_name: 'SessionStart',
+  }), NOW);
+  assert.ok(state['codex:s1']);
+  assert.equal(state['codex:s1'].sourceSessionId, 's1');
+  assert.equal(state['codex:s1'].agent, 'codex');
+  assert.equal(state.s1, undefined, 'Claude-сессия с таким id останется отдельной');
+});
+
+test('PermissionRequest Codex показывает ожидание разрешения и инструмент', () => {
+  const state = applyEvent({}, ev({
+    agent: 'codex',
+    hook_event_name: 'PermissionRequest',
+    tool_name: 'Bash',
+    tool_input: { command: 'npm publish', description: 'Нужен доступ к сети' },
+  }), NOW);
+  const card = state['codex:s1'];
+  assert.equal(card.status, STATUS.WAITING);
+  assert.equal(card.reason, WAIT_REASON.PERMISSION);
+  assert.equal(card.tool, 'Bash');
+  assert.equal(card.toolInfo, 'npm publish');
+  assert.equal(card.note, 'Нужен доступ к сети');
+});
+
+test('SessionEnd Codex удаляет только Codex-карточку с совпадающим source id', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'SessionStart' }), NOW);
+  state = applyEvent(state, ev({ agent: 'codex', hook_event_name: 'SessionStart' }), NOW);
+  state = applyEvent(state, ev({ agent: 'codex', hook_event_name: 'SessionEnd' }), NOW + 1);
+  assert.ok(state.s1);
+  assert.equal(state['codex:s1'], undefined);
 });
 
 test('сессия в git-worktree остаётся в группе родительского проекта', () => {
