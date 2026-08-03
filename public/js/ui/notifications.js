@@ -63,8 +63,9 @@ export function createNotifications({ onFocus, toast }) {
     if (!notifyOn || !fresh.length || !('Notification' in window) || Notification.permission !== 'granted') return;
 
     const one = fresh.length === 1 ? fresh[0] : null;
+    const agent = one?.agent === 'codex' ? 'Codex' : 'Claude';
     const title = one
-      ? `${one.project} ${WAIT_BADGE[one.reason] || 'ждёт тебя'}`
+      ? `${one.project} · ${agent} ${WAIT_BADGE[one.reason] || 'ждёт тебя'}`
       : `${fresh.length} сессии ждут тебя`;
     const body = one
       ? (one.note || (one.tool ? `${one.tool}${one.toolInfo ? ' · ' + one.toolInfo : ''}` : one.title || ''))

@@ -148,6 +148,10 @@
     .counts { margin-left: auto; font-size: 14.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
     .counts b { color: var(--text); font-weight: 700; }
     .counts .w { color: var(--red); font-weight: 600; }
+    .agent-counts { display: inline-flex; gap: 6px; margin-left: 7px; font-size: 11.5px; }
+    .agent-counts > span { border-radius: 6px; padding: 1px 6px; border: 1px solid; }
+    .agent-counts .ac-claude { color: #e7b77f; background: rgba(231,183,127,.08); border-color: rgba(231,183,127,.28); }
+    .agent-counts .ac-codex { color: #77d8bd; background: rgba(119,216,189,.08); border-color: rgba(119,216,189,.28); }
 
     main { padding: 10px 26px 70px; max-width: var(--maxw); margin: 0 auto; }
     .sec { margin-top: 28px; }
@@ -173,24 +177,77 @@
       border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; letter-spacing: 0; font-weight: 600;
     }
 
+    /* Дерево читается от работы к исполнителю: проект → Claude/Codex → сессии. Раньше
+       порядок был обратный, поэтому один cwd распадался на две далёкие группы. */
+    .project-tree { margin: 18px 0 32px; }
+    .project-tree + .project-tree { margin-top: 34px; }
+    .project-head {
+      display: flex; align-items: center; gap: 12px; min-height: 38px;
+      font-size: 20px; color: var(--text); letter-spacing: -.2px;
+    }
+    .project-head .avatar {
+      width: 36px; height: 36px; border-radius: 11px; flex: none;
+      display: inline-grid; place-items: center;
+      font-size: 13px; font-weight: 800; letter-spacing: .2px; font-variant-numeric: tabular-nums;
+      background: var(--av-bg); color: var(--av-fg); border: 1px solid var(--av-br);
+    }
+    .project-head b { font-weight: 760; }
+    .project-head::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border), transparent); }
+    .project-agents { display: inline-flex; gap: 6px; margin-left: 4px; }
+    .project-agent {
+      font-size: 11.5px; font-weight: 650; padding: 1px 7px; border-radius: 6px;
+      border: 1px solid; white-space: nowrap;
+    }
+    .project-agent.a-claude { color: #e7b77f; background: rgba(231,183,127,.08); border-color: rgba(231,183,127,.28); }
+    .project-agent.a-codex { color: #77d8bd; background: rgba(119,216,189,.08); border-color: rgba(119,216,189,.28); }
+
+    .project-branches {
+      position: relative; margin: 10px 0 0 18px; padding-left: 30px;
+      border-left: 1px solid rgba(124,136,153,.38);
+    }
+    .agent-branch {
+      --agent: #aab4c4; --agent-bg: rgba(170,180,196,.08); --agent-br: rgba(170,180,196,.25);
+      position: relative; padding: 4px 0 0; margin-bottom: 18px;
+    }
+    .agent-branch:last-child { margin-bottom: 0; padding-bottom: 2px; }
+    .agent-branch::before {
+      content: ""; position: absolute; left: -30px; top: 17px; width: 21px;
+      border-top: 1px solid var(--agent-br);
+    }
+    .agent-branch.a-claude { --agent: #e7b77f; --agent-bg: rgba(231,183,127,.10); --agent-br: rgba(231,183,127,.38); }
+    .agent-branch.a-codex { --agent: #77d8bd; --agent-bg: rgba(119,216,189,.10); --agent-br: rgba(119,216,189,.38); }
+    .branch-head {
+      display: flex; align-items: center; gap: 9px; height: 28px; margin: 0 0 8px;
+      color: var(--agent); font-size: 13px; letter-spacing: .2px;
+    }
+    .branch-head .agent-symbol {
+      width: 29px; height: 24px; display: inline-grid; place-items: center; border-radius: 7px;
+      color: var(--agent); background: var(--agent-bg); border: 1px solid var(--agent-br);
+      font: 750 10px/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: -.3px;
+    }
+    .branch-head b { font-weight: 700; }
+    .branch-head .cnt { color: var(--agent); border-color: var(--agent-br); background: var(--agent-bg); }
+
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
 
     /* Ждущие карточки крупнее всего остального. Раньше было наоборот: секция растягивала
        единственную карточку по сетке в 5 колонок, и самая важная карточка на борде
        оказывалась физически самой мелкой. justify-content:start - чтобы одна карточка
        не расползалась на весь монитор. */
-    [data-slot="waiting"] {
+    [data-slot^="w:"] {
       /* auto-fill считает число колонок по МАКСИМУМУ дорожки, поэтому потолок 600, а не 640:
          на мониторе 1900px это даёт три крупные карточки в ряд вместо двух */
       grid-template-columns: repeat(auto-fill, minmax(460px, 600px));
       justify-content: start; gap: 18px;
     }
-    [data-slot="waiting"] .card { min-height: 134px; padding: 19px 22px 16px 24px; }
-    [data-slot="waiting"] .proj { font-size: 19px; }
-    [data-slot="waiting"] .title { font-size: 16.5px; -webkit-line-clamp: 2; }
-    [data-slot="waiting"] .note { font-size: 15px; }
-    [data-slot="waiting"] .badge { font-size: 13.5px; padding: 5px 13px; }
-    [data-slot="waiting"] .sid { font-size: 13px; }
+    [data-slot^="w:"] .card { min-height: 134px; padding: 19px 22px 16px 24px; }
+    [data-slot^="w:"] .title { font-size: 16.5px; -webkit-line-clamp: 2; }
+    [data-slot^="w:"] .note { font-size: 15px; }
+    [data-slot^="w:"] .badge { font-size: 13.5px; padding: 5px 13px; }
+    [data-slot^="w:"] .sid { font-size: 13px; }
+    /* Проект и агент уже названы двумя уровнями дерева — в самой карточке/строке не
+       дублируем их ещё раз. Терминал оставляем: он различает две сессии одного агента. */
+    .waiting-tree .card .proj, .project-tree .unit .agent-tag { display: none; }
 
     .card {
       position: relative; overflow: hidden;
@@ -335,6 +392,16 @@
     /* margin-top:auto прижимает подвал вниз - карточки с min-height выглядят выровненными */
     .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); margin-top: auto; }
     .src { opacity: .7; letter-spacing: .3px; }
+    .origin { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+    .agent-tag {
+      --agent: var(--dim); --agent-bg: rgba(255,255,255,.04); --agent-br: var(--border);
+      display: inline-flex; align-items: center; gap: 5px; flex: none;
+      font-size: 11.5px; font-weight: 650; color: var(--agent); background: var(--agent-bg);
+      border: 1px solid var(--agent-br); border-radius: 6px; padding: 1px 7px; white-space: nowrap;
+    }
+    .agent-tag.a-claude { --agent: #e7b77f; --agent-bg: rgba(231,183,127,.08); --agent-br: rgba(231,183,127,.28); }
+    .agent-tag.a-codex { --agent: #77d8bd; --agent-bg: rgba(119,216,189,.08); --agent-br: rgba(119,216,189,.28); }
+    .agent-dot { width: 6px; height: 6px; border-radius: 2px; background: currentColor; }
     .term { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--dim);
       background: rgba(255,255,255,.045); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
     /* маркер терминала брендовым цветом (--tc задаётся на карточке из termColor) */
@@ -352,33 +419,13 @@
        ей хватает одной строки - а площадь и вес отдаём красной секции, ради которой
        борд и существует. Колонки у всех строк общие, поэтому статусы читаются столбцом
        с расстояния, не вчитываясь в каждую строку отдельно. */
-    /* Заголовок группы-проекта. Имя проекта ушло из самой строки сюда: раньше оно стояло
-       в каждой строке и повторялось, а сгруппированный список читается быстрее - видно,
-       сколько сессий висит на каждом проекте.
-       Вместо голой цветной точки (она повторяла подсветку окружения WebStorm/Alacritty и
-       спорила с ней) у группы стоит монограмма-аватар: инициалы проекта в плашке. Она
-       читается как опознавательный знак проекта, а не как ещё один индикатор состояния,
-       и различает проекты даже боковым зрением. */
-    .ghead {
-      display: flex; align-items: center; gap: 12px;
-      margin: 26px 0 11px; font-size: 19px; font-weight: 750; letter-spacing: -.2px; color: var(--text);
-    }
-    .ghead:first-child { margin-top: 6px; }
-    .ghead .avatar {
-      width: 32px; height: 32px; border-radius: 10px; flex: none;
-      display: inline-grid; place-items: center;
-      font-size: 13px; font-weight: 800; letter-spacing: .2px; font-variant-numeric: tabular-nums;
-      background: var(--av-bg); color: var(--av-fg); border: 1px solid var(--av-br);
-    }
-    .ghead::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border), transparent); }
-
     .rows { display: flex; flex-direction: column; gap: 6px; }
     .row {
       position: relative; display: grid; align-items: center; gap: 16px;
       /* Ширины фиксированные, а не auto: каждая строка это отдельный grid, и auto-колонка
          меряется по СВОЕМУ содержимому - бейджи и время разъезжались бы по строкам.
          Тянется только задача, поэтому все остальные колонки стоят ровным столбцом. */
-      grid-template-columns: 92px minmax(0, 1fr) 340px 162px 96px 116px;
+      grid-template-columns: 92px minmax(0, 1fr) 340px 162px 96px 190px;
       padding: 13px 46px 13px 18px;
       background: linear-gradient(90deg, var(--surface), rgba(31,42,60,.78));
       border: 1px solid var(--border); border-radius: 11px;
@@ -407,8 +454,14 @@
     .row.stale .idle { display: inline-flex; }
     .row.stale .term { display: none; }
     /* борд живёт на широком мониторе, но при сужении необязательное уходит первым */
-    @media (max-width: 1250px) { .row .sid { display: none; } .row { grid-template-columns: minmax(0, 1fr) 260px 150px 88px 110px; } }
+    @media (max-width: 1250px) { .row .sid { display: none; } .row { grid-template-columns: minmax(0, 1fr) 260px 150px 88px 170px; } }
     @media (max-width: 900px)  { .row .term { display: none; } }
+    @media (max-width: 1100px) { .agent-counts { display: none; } }
+    @media (max-width: 700px) {
+      .project-branches { margin-left: 9px; padding-left: 18px; }
+      .agent-branch::before { left: -18px; width: 12px; }
+      .project-agents { display: none; }
+    }
 
     /* «Никто не ждёт»: без этого спокойный борд выглядит ровно так же, как борд,
        на который ты просто не с той стороны посмотрел - секция ожидания молча исчезала */

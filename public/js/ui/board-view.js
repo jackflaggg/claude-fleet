@@ -18,9 +18,25 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
   let lastSig = null;
   let lastLayout = '';
   const slots = new Map();
+  const AGENTS = {
+    claude: { label: 'Claude Code', short: 'Claude' },
+    codex: { label: 'Codex', short: 'Codex' },
+  };
+
+    function agentOf(c) { return c.agent === 'codex' ? 'codex' : 'claude'; }
+    function agentTag(c) {
+      const agent = agentOf(c);
+      return `<span class="agent-tag a-${agent}"><span class="agent-dot"></span>${AGENTS[agent].short}</span>`;
+    }
+    function originHtml(c) {
+      const terminal = c.terminal
+        ? `<span class="term" style="--tc:${termColor(c.terminal)}">${escapeHtml(c.terminal)}</span>`
+        : '';
+      return `<span class="origin">${agentTag(c)}${terminal}</span>`;
+    }
 
     function sig(sessions) {
-      return sessions.map((c) => [c.sessionId, c.project, c.worktree, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.waitingSince].join('\u0001')).join('\u0002');
+      return sessions.map((c) => [c.sessionId, c.agent, c.project, c.worktree, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.waitingSince].join('\u0001')).join('\u0002');
     }
     function badgeFor(c) {
       if (c.status === 'waiting') return { cls: 'waiting', label: WAIT_BADGE[c.reason] || 'ждёт тебя' };
@@ -33,7 +49,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
     }
     function cardHtml(c) {
       const b = badgeFor(c);
-      const sid = '#' + String(c.sessionId || '').slice(0, 8);
+      const sid = '#' + String(c.sourceSessionId || c.sessionId || '').slice(0, 8);
       // при ожидании разрешения/ответа тул показываем тоже: именно он объясняет, на что
       // именно спрашивают («ждёт разрешения · Bash · git push --force»)
       const asking = c.status === 'waiting' && (c.reason === 'permission' || c.reason === 'question');
@@ -49,7 +65,6 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
       // без задачи карточка остаётся пустой намеренно: подпись вроде «готов к работе»
       // повторяла бейдж слово в слово и делала карточку выше без единого нового факта
       const titleHtml = c.title ? `<div class="title">${escapeHtml(c.title)}</div>` : '';
-      const foot = c.terminal ? `<span class="term" style="--tc:${termColor(c.terminal)}">${escapeHtml(c.terminal)}</span>` : '<span class="src">claude-code</span>';
       // для красной карточки главная цифра - сколько она уже ждёт, поэтому она в бейдже
       // время ожидания берём из waitingSince, а не из updatedAt: updatedAt двигает любое
       // входящее событие, и счётчик обнулялся бы прямо во время ожидания
@@ -65,7 +80,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
         ${titleHtml}
         ${noteHtml}
         ${toolHtml}
-        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relativeTime(c.updatedAt)}</span><span class="idle">нет активности</span>${foot}</div>`;
+        <div class="foot"><span class="rel" data-ts="${c.updatedAt || 0}">${relativeTime(c.updatedAt)}</span><span class="idle">нет активности</span>${originHtml(c)}</div>`;
     }
 
     /* Строка секции «в работе». Те же данные, что и в карточке, но в одну строку и общими
@@ -74,19 +89,18 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
        съезжает и колонки перестают выстраиваться столбцом. */
     function rowHtml(c) {
       const b = badgeFor(c);
-      const sid = '#' + String(c.sessionId || '').slice(0, 8);
+      const sid = '#' + String(c.sourceSessionId || c.sessionId || '').slice(0, 8);
       const showTool = Boolean(c.tool) && c.status !== 'ready';
       const toolTxt = showTool ? escapeHtml(c.tool) + (c.toolInfo ? ' · ' + escapeHtml(c.toolInfo) : '') : '';
       const toolCell = showTool ? `<span class="tool"><span class="d"></span><span class="tt">${toolTxt}</span></span>` : '<span></span>';
       const durCell = c.createdAt ? `<span class="dur" data-created="${c.createdAt}">${durationText(c.createdAt)}</span>` : '<span></span>';
-      const term = c.terminal ? `<span class="term" style="--tc:${termColor(c.terminal)}">${escapeHtml(c.terminal)}</span>` : '<span class="src">claude-code</span>';
       return `<button class="kill" data-kill="${escapeHtml(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>
         <span class="sid">${sid}</span>
         <span class="rtask">${wtreeHtml(c)}${escapeHtml(c.title || '')}</span>
         ${toolCell}
         <span class="badge ${b.cls}">${b.label}</span>
         ${durCell}
-        <span class="rend"><span class="idle">нет активности</span>${term}</span>`;
+        <span class="rend"><span class="idle">нет активности</span>${originHtml(c)}</span>`;
     }
 
     /* Карточки живут между рендерами: элемент .card создаётся один раз на сессию и дальше
@@ -97,7 +111,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
     const cardEls = new Map();
 
     function cardSig(c) {
-      return [c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.project, c.worktree, c.createdAt].join('\u0001');
+      return [c.agent, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.project, c.worktree, c.createdAt].join('\u0001');
     }
 
     /* shape - карточка (ждущие) или строка (в работе). Сессия переходит между секциями,
@@ -107,11 +121,13 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
       let entry = cardEls.get(c.sessionId);
       if (!entry || entry.shape !== shape) {
         const el = document.createElement('div');
-        el.className = `unit ${shape} s-${c.status}`;
+        el.className = `unit ${shape} s-${c.status} a-${agentOf(c)}`;
         el.setAttribute('role', 'button');
         el.tabIndex = 0;
         el.dataset.id = c.sessionId;
-        el.title = 'перейти к сессии (WebStorm или её терминал)';
+        el.title = agentOf(c) === 'codex'
+          ? 'открыть проект сессии Codex'
+          : 'перейти к сессии Claude (WebStorm или её терминал)';
         entry = { el, sig: null, shape };
         cardEls.set(c.sessionId, entry);
       }
@@ -120,7 +136,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
         entry.sig = sig;
         // класс протухания ставит tickTimes, при смене статуса его нужно сохранить
         const stale = entry.el.classList.contains('stale') ? ' stale' : '';
-        entry.el.className = `unit ${shape} s-${c.status}${stale}`;
+        entry.el.className = `unit ${shape} s-${c.status} a-${agentOf(c)}${stale}`;
         entry.el.innerHTML = shape === 'row' ? rowHtml(c) : cardHtml(c);
       }
       // протухание считаем от него же: у строки нет подписи «N сек назад», а знать
@@ -137,6 +153,42 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
       }
     }
 
+    function groupByProject(cards) {
+      const projects = Object.create(null);
+      for (const card of cards) {
+        const project = card.project || 'unknown';
+        projects[project] ||= { claude: [], codex: [] };
+        projects[project][agentOf(card)].push(card);
+      }
+      for (const project of Object.values(projects)) {
+        for (const agent of ['claude', 'codex']) {
+          project[agent].sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId)));
+        }
+      }
+      return projects;
+    }
+
+    function projectHeadHtml(name, project) {
+      const mark = projectMark(name);
+      const total = project.claude.length + project.codex.length;
+      const av = `--av-fg:hsl(${mark.hue} 62% 70%);--av-bg:hsl(${mark.hue} 55% 60% / .16);`
+        + `--av-br:hsl(${mark.hue} 55% 62% / .34)`;
+      const agents = ['claude', 'codex'].filter((agent) => project[agent].length)
+        .map((agent) => `<span class="project-agent a-${agent}">${AGENTS[agent].short} ${project[agent].length}</span>`)
+        .join('');
+      return `<div class="project-head"><span class="avatar" style="${av}" aria-hidden="true">${escapeHtml(mark.letters)}</span>`
+        + `<b>${escapeHtml(name)}</b><span class="cnt">${total}</span><span class="project-agents">${agents}</span></div>`;
+    }
+
+    function branchHtml(prefix, name, agent, cards, shape) {
+      if (!cards.length) return '';
+      const symbol = agent === 'codex' ? 'CX' : 'CL';
+      const container = shape === 'card' ? 'grid' : 'rows';
+      return `<div class="agent-branch a-${agent}"><div class="branch-head"><span class="agent-symbol">${symbol}</span>`
+        + `<b>${AGENTS[agent].label}</b><span class="cnt">${cards.length}</span></div>`
+        + `<div class="${container}" data-slot="${prefix}:${agent}:${escapeHtml(name)}"></div></div>`;
+    }
+
     function render() {
       const list = data.sessions || [];
       // кто дольше ждёт, тот выше: разбираешь самое залежавшееся, и появление новой красной
@@ -144,21 +196,23 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
       const waiting = list.filter((c) => c.status === 'waiting')
         .sort((a, b) => (a.waitingSince || a.updatedAt || 0) - (b.waitingSince || b.updatedAt || 0));
       const busy = list.filter((c) => c.status !== 'waiting');
-
-      // Object.create(null): имя проекта - это имя папки, оно может совпасть с полем прототипа
-      // (constructor, toString, hasOwnProperty). На обычном {} это уронило бы рендер.
-      const groups = Object.create(null);
-      for (const c of busy) (groups[c.project] ||= []).push(c);
-      const groupNames = Object.keys(groups).sort();
-      for (const name of groupNames) {
-        groups[name].sort((a, b) => String(a.sessionId).localeCompare(String(b.sessionId)));
-      }
+      const agentOrder = ['claude', 'codex'];
+      // Верхний уровень - cwd-проект. Внутри него две явные ветки агентов: так Claude и
+      // Codex из разных терминалов остаются рядом и не выглядят разными проектами.
+      const waitingProjects = groupByProject(waiting);
+      const busyProjects = groupByProject(busy);
+      const waitingNames = Object.keys(waitingProjects).sort((a, b) => {
+        const oldest = (project) => Math.min(...agentOrder.flatMap((agent) =>
+          project[agent].map((c) => c.waitingSince || c.updatedAt || 0)));
+        return oldest(waitingProjects[a]) - oldest(waitingProjects[b]);
+      });
+      const busyNames = Object.keys(busyProjects).sort();
 
       // скелет перестраиваем, только если изменилась сама раскладка (состав секций, групп
       // и порядок в них), а не при каждом обновлении статуса
       const layout = JSON.stringify([
-        waiting.map((c) => c.sessionId),
-        groupNames.map((name) => [name, groups[name].map((c) => c.sessionId)]),
+        waitingNames.map((name) => [name, agentOrder.map((agent) => waitingProjects[name][agent].map((c) => c.sessionId))]),
+        busyNames.map((name) => [name, agentOrder.map((agent) => busyProjects[name][agent].map((c) => c.sessionId))]),
         list.length > 0 && waiting.length === 0,
       ]);
       if (layout !== lastLayout) {
@@ -166,7 +220,13 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
         let html = '';
         if (waiting.length) {
           html += `<div class="sec"><div class="sec-head attn"><span class="ping"></span>Ждут тебя<span class="cnt">${waiting.length}</span></div>`;
-          html += '<div class="grid" data-slot="waiting"></div></div>';
+          for (const name of waitingNames) {
+            const project = waitingProjects[name];
+            html += `<div class="project-tree waiting-tree">${projectHeadHtml(name, project)}<div class="project-branches">`;
+            for (const agent of agentOrder) html += branchHtml('w', name, agent, project[agent], 'card');
+            html += '</div></div>';
+          }
+          html += '</div>';
         } else if (list.length) {
           // спокойное состояние показываем явно: исчезающая секция неотличима от
           // "я просто смотрю не туда", а борд должен читаться одним взглядом издалека
@@ -175,13 +235,11 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
         }
         if (busy.length) {
           html += `<div class="sec"><div class="sec-head">В работе<span class="cnt">${busy.length}</span></div>`;
-          for (const name of groupNames) {
-            const mark = projectMark(name);
-            const av = `--av-fg:hsl(${mark.hue} 62% 70%);--av-bg:hsl(${mark.hue} 55% 60% / .16);`
-              + `--av-br:hsl(${mark.hue} 55% 62% / .34)`;
-            html += `<div class="ghead"><span class="avatar" style="${av}" aria-hidden="true">${escapeHtml(mark.letters)}</span>`
-              + `${escapeHtml(name)}<span class="cnt">${groups[name].length}</span></div>`;
-            html += `<div class="rows" data-slot="g:${escapeHtml(name)}"></div>`;
+          for (const name of busyNames) {
+            const project = busyProjects[name];
+            html += `<div class="project-tree">${projectHeadHtml(name, project)}<div class="project-branches">`;
+            for (const agent of agentOrder) html += branchHtml('p', name, agent, project[agent], 'row');
+            html += '</div></div>';
           }
           html += '</div>';
         }
@@ -192,18 +250,29 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
 
       // элементы раскладываем по слотам: существующие переезжают, а не пересоздаются
       if (waiting.length) {
-        const slot = slots.get('waiting');
-        if (slot) for (const c of waiting) slot.append(cardEl(c, 'card'));
+        for (const name of waitingNames) {
+          for (const agent of agentOrder) {
+            const slot = slots.get(`w:${agent}:${name}`);
+            if (slot) for (const c of waitingProjects[name][agent]) slot.append(cardEl(c, 'card'));
+          }
+        }
       }
-      for (const name of groupNames) {
-        const slot = slots.get(`g:${name}`);
-        if (slot) for (const c of groups[name]) slot.append(cardEl(c, 'row'));
+      for (const name of busyNames) {
+        for (const agent of agentOrder) {
+          const slot = slots.get(`p:${agent}:${name}`);
+          if (slot) for (const c of busyProjects[name][agent]) slot.append(cardEl(c, 'row'));
+        }
       }
       forgetGoneCards(list);
       empty.hidden = list.length > 0;
 
+      const claudeCount = list.filter((c) => agentOf(c) === 'claude').length;
+      const codexCount = list.length - claudeCount;
+      const split = list.length
+        ? ` <span class="agent-counts"><span class="ac-claude">Claude ${claudeCount}</span><span class="ac-codex">Codex ${codexCount}</span></span>`
+        : '';
       document.getElementById('counts').innerHTML =
-        `<b>${list.length}</b> ${plural(list.length, 'сессия', 'сессии', 'сессий')}` +
+        `<b>${list.length}</b> ${plural(list.length, 'сессия', 'сессии', 'сессий')}${split}` +
         (waiting.length ? ` · <span class="w">${waiting.length} ждут тебя</span>` : '');
       document.title = (waiting.length ? `(${waiting.length}) ` : '') + 'Fleet';
       document.getElementById('mark').classList.toggle('alert', waiting.length > 0);
@@ -211,7 +280,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
       onWaiting(waiting);
     }
 
-    // событий, которых борд не понимает, в норме нет: если появились - обновился Claude Code
+    // событий, которых борд не понимает, в норме нет: если появились - обновился агент
     // и часть статусов, скорее всего, перестала обновляться
     function renderUnknown() {
       const el = document.getElementById('unknown');
@@ -222,7 +291,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop }) {
       el.textContent = `${list.length} ${plural(list.length, 'незнакомое событие', 'незнакомых события', 'незнакомых событий')}`;
       el.title = 'Борд не понимает эти события хука (всего ' + total + '): '
         + list.map((u) => `${u.name} ×${u.count}`).join(', ')
-        + '. Похоже, обновился Claude Code - часть статусов может не обновляться';
+        + '. Похоже, обновился Claude Code или Codex - часть статусов может не обновляться';
     }
 
     /* Окно лимита. Сервер шлёт только границы, обратный отсчёт двигаем сами в tickTimes:
