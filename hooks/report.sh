@@ -34,6 +34,7 @@ curl -s -o /dev/null \
   -H 'Content-Type: application/json' \
   -H "X-Fleet-App: ${__CFBundleIdentifier:-}" \
   -H "X-Fleet-Agent: ${AGENT}" \
+  -H "X-Fleet-Pid: ${PPID:-}" \
   --data-binary @- >/dev/null 2>&1 || true
 # Stop/SubagentStop в Codex ожидают JSON-ответ hook-команды. Пустой объект ничего не
 # меняет в ходе агента; printf встроен в bash и не добавляет ни процесса, ни заметной цены.

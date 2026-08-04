@@ -23,6 +23,7 @@ import { applyEvent, pruneStale, isHandledEvent } from './state.js';
 import { resolveFocus } from './focus.js';
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './guards.js';
 import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './usage.js';
+import { isProcessAlive, pruneClosedCodex } from './codex-liveness.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -50,6 +51,8 @@ const STALE_MS = (Number(process.env.FLEET_STALE_HOURS) || 6) * 60 * 60 * 1000;
 // Отдельный, куда более короткий порог для карточек без задачи и без инструмента: за ними
 // нет работы, которую можно потерять (см. isBlank в state.js).
 const BLANK_MS = (Number(process.env.FLEET_BLANK_MINUTES) || 15) * 60 * 1000;
+const CODEX_LIVENESS_INTERVAL_MS = 10 * 1000;
+const CODEX_LIVENESS_GRACE_MS = 10 * 1000;
 
 /**
  * Окно лимита Claude. Папка транскриптов и длина окна - в .env: путь машинно-зависимый,
@@ -133,6 +136,36 @@ function loadState() {
 
 let sessions = loadState();
 const sseClients = new Set();
+
+let closedCodexSince = new Map();
+
+/**
+ * В отличие от SessionEnd (до 30 минут после закрытия вкладки), PID отражает реальную
+ * подключённую Codex-сессию. signal 0 ничего не посылает процессу, только проверяет его
+ * существование. Два последовательных промаха не дают переподключению мигать карточкой.
+ */
+function scanCodexLiveness() {
+  const pids = [...new Set(Object.values(sessions)
+    .filter((card) => card?.agent === 'codex' && Number.isSafeInteger(card.processPid))
+    .map((card) => card.processPid))];
+  const alivePids = new Set();
+  for (const pid of pids) {
+    if (isProcessAlive(pid)) alivePids.add(pid);
+  }
+  const result = pruneClosedCodex(
+    sessions,
+    alivePids,
+    closedCodexSince,
+    Date.now(),
+    CODEX_LIVENESS_GRACE_MS,
+  );
+  closedCodexSince = result.missingSince;
+  if (result.sessions !== sessions) {
+    sessions = result.sessions;
+    broadcast();
+    persist();
+  }
+}
 
 let saveTimer = null;
 function persist() {
@@ -419,6 +452,8 @@ async function handleEvent(req, res) {
   // отдельным заголовком, чтобы не переписывать/не буферизовать JSON на горячем пути.
   const agentHeader = req.headers['x-fleet-agent'];
   if (agentHeader === 'codex') event.agent = 'codex';
+  const pidHeader = Number(req.headers['x-fleet-pid']);
+  if (Number.isSafeInteger(pidHeader) && pidHeader > 1) event.processPid = pidHeader;
 
   if (event?.hook_event_name) {
     noteEventSize(event.hook_event_name, raw.length);
@@ -434,6 +469,7 @@ function handleStream(req, res) {
   // Борд открыли после паузы: пока его никто не смотрел, транскрипты не читались,
   // и окно лимита успело уехать. Пересчитываем сразу, не дожидаясь тика опроса.
   if (sseClients.size === 0) scanUsage();
+  if (sseClients.size === 0) scanCodexLiveness();
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -594,6 +630,11 @@ setInterval(() => {
     persist();
   }
 }, PRUNE_INTERVAL_MS).unref();
+
+// Закрытые вкладки Codex убираем быстро; без открытого борда даже дешёвые проверки не нужны.
+setInterval(() => {
+  if (sseClients.size > 0) scanCodexLiveness();
+}, CODEX_LIVENESS_INTERVAL_MS).unref();
 
 /**
  * Пересчёт окна лимита - только пока борд кто-то смотрит. Без открытых вкладок читать

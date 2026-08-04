@@ -20,10 +20,12 @@ test('Codex использует отдельное пространство id 
   const state = applyEvent({}, ev({
     agent: 'codex',
     hook_event_name: 'SessionStart',
+    processPid: 12345,
   }), NOW);
   assert.ok(state['codex:s1']);
   assert.equal(state['codex:s1'].sourceSessionId, 's1');
   assert.equal(state['codex:s1'].agent, 'codex');
+  assert.equal(state['codex:s1'].processPid, 12345);
   assert.equal(state.s1, undefined, 'Claude-сессия с таким id останется отдельной');
 });
 

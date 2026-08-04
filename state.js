@@ -258,6 +258,7 @@ export function applyEvent(sessions, event, now) {
     cwd: typeof event.cwd === 'string' ? event.cwd : '',
     appId: null,
     terminal: null,
+    processPid: null,
     title: '',
     tool: null,
     toolInfo: null,
@@ -284,6 +285,9 @@ export function applyEvent(sessions, event, now) {
   if (typeof event.appId === 'string' && event.appId) {
     card.appId = event.appId;
     card.terminal = terminalName(event.appId);
+  }
+  if (agent === 'codex' && Number.isSafeInteger(event.processPid) && event.processPid > 1) {
+    card.processPid = event.processPid;
   }
 
   switch (eventName) {
