@@ -6,6 +6,8 @@
  * Статус выводится приблизительно из типа события, точной телеметрии у хуков нет.
  */
 
+import { bumpActivity } from './public/js/lib/activity.js';
+
 export const STATUS = {
   READY: 'ready',
   THINKING: 'thinking',
@@ -54,6 +56,12 @@ const MAX_TITLE = 300;
 const MAX_TOOL_INFO = 70;
 const MAX_NOTE = 120;
 
+/**
+ * Искра активности (10 столбиков по минутам) считается общим с бордом кодом: сервер
+ * накапливает, браузер досдвигает по текущему времени. Реэкспорт нужен тестам ядра.
+ */
+export { ACTIVITY_BARS, bumpActivity, shiftActivity } from './public/js/lib/activity.js';
+
 function clip(value, limit = MAX_TITLE) {
   if (typeof value !== 'string') return '';
   const trimmed = value.replace(/\s+/g, ' ').trim();
@@ -83,6 +91,25 @@ function isServicePrompt(text) {
   if (typeof text !== 'string') return false;
   const head = text.trimStart();
   return SERVICE_PROMPT_TAGS.some((tag) => head.startsWith(tag));
+}
+
+/**
+ * Промпт от другой сессии (`<cross-session-message ...>`) или с борда через канал
+ * (`<channel source="fleet">`) - настоящая задача, просто завёрнутая в XML. На борде
+ * должна быть видна сама инструкция, а не обёртка с путём к сокету.
+ */
+const WRAPPED_PROMPT_TAGS = ['cross-session-message', 'channel'];
+
+function unwrapPrompt(text) {
+  const head = text.trimStart();
+  for (const tag of WRAPPED_PROMPT_TAGS) {
+    if (!head.startsWith(`<${tag}`)) continue;
+    const open = head.indexOf('>');
+    if (open < 0) return text;
+    const close = head.lastIndexOf(`</${tag}>`);
+    return head.slice(open + 1, close > open ? close : undefined);
+  }
+  return text;
 }
 
 function projectFromCwd(cwd) {
@@ -156,8 +183,16 @@ function toolTarget(name, input) {
     case 'Grep':
     case 'Glob':
       return clip(input.pattern, MAX_TOOL_INFO);
+    // субагент: инструмент называется Agent (прежнее имя Task оставлено для старых версий)
+    case 'Agent':
     case 'Task':
       return clip(input.description || input.subagent_type, MAX_TOOL_INFO);
+    case 'AskUserQuestion':
+      return clip(input.questions?.[0]?.question, MAX_TOOL_INFO);
+    case 'Skill':
+      return clip(input.skill, MAX_TOOL_INFO);
+    case 'ToolSearch':
+      return clip(input.query, MAX_TOOL_INFO);
     case 'WebFetch':
     case 'WebSearch':
       return clip(input.url || input.query, MAX_TOOL_INFO);
@@ -286,9 +321,12 @@ export function applyEvent(sessions, event, now) {
     card.appId = event.appId;
     card.terminal = terminalName(event.appId);
   }
-  if (agent === 'codex' && Number.isSafeInteger(event.processPid) && event.processPid > 1) {
+  // PID процесса агента ($PPID hook-команды, проверено выборкой ps: у Claude это сам процесс
+  // claude). По нему сервер снимает карточку закрытой сессии и привязывает канал ответа.
+  if (Number.isSafeInteger(event.processPid) && event.processPid > 1) {
     card.processPid = event.processPid;
   }
+  Object.assign(card, bumpActivity(previous.activity, previous.activityMinute, now));
 
   switch (eventName) {
     case 'SessionStart':
@@ -308,7 +346,7 @@ export function applyEvent(sessions, event, now) {
         const prompt = event.prompt ?? event.user_prompt;
         // Служебную инъекцию не пишем в заголовок - сохраняем прошлую реальную задачу.
         if (typeof prompt === 'string' && prompt.trim() && !isServicePrompt(prompt)) {
-          card.title = clip(prompt);
+          card.title = clip(unwrapPrompt(prompt)) || card.title;
         }
       }
       break;

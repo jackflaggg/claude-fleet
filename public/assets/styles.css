@@ -1,493 +1,309 @@
-    :root {
-      /* Фон и поверхности - лесенкой, а не одним чёрным: раньше борд был почти угольный,
-         и строки на нём не читались как отдельные объекты. Каждый уровень заметно светлее
-         предыдущего, чтобы с расстояния было видно, где заканчивается одна строка. */
-      --bg: #1b2534;
-      --surface: #212d40;   /* строки «в работе» */
-      --surface-2: #26334a; /* карточки «ждут тебя» */
-      --text: #f0f4fa;
-      --dim: #a5b0c4;
-      --faint: #7c8899;
-      --cyan: #35d6c4;
-      --blue: #4d9dff;
-      --red: #ff5d63;
-      --amber: #ffb454;
-      --green: #47c97a;
-      --violet: #a99bff;   /* чип git-worktree: заметен, но не спорит с красным «ждут тебя» */
-      --border: #36445e;
-      --border-hi: #5a6d8c;
-      --radius: 14px;
-      --maxw: 1900px; /* потолок ширины контента: колонки-проекты заполняют ширину, но не бесконечно */
-    }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-      -webkit-font-smoothing: antialiased;
-      overflow-x: hidden;
-    }
-    /* фон: небула из пятен + тех-сетка + зерно. Пятна СТАТИЧНЫ намеренно.
-       Пока они дрейфовали через transform со scale(), blur(95px) на трёх слоях
-       по 50vw пересчитывался заново каждый кадр: GPU-процесс браузера держал
-       ~54% ядра круглосуточно ради текстуры, на которую никто не смотрит.
-       Без анимации blur растрируется один раз и слой кешируется, CPU в покое ~0.
-       Не возвращать сюда движение: борд стоит на втором мониторе сутками. */
-    .bg { position: fixed; inset: 0; z-index: -1; overflow: hidden;
-      background: radial-gradient(135% 120% at 50% -12%, #2b3d5c, #1b2534 76%); }
-    .bg .blob { position: absolute; border-radius: 50%; filter: blur(95px); }
-    .bg .b1 { width: 50vw; height: 50vw; left: -12vw; top: -16vw; opacity: .30;
-      background: radial-gradient(circle, #2f6dff, transparent 66%); }
-    .bg .b2 { width: 46vw; height: 46vw; right: -14vw; bottom: -18vw; opacity: .28;
-      background: radial-gradient(circle, #16b8a6, transparent 66%); }
-    .bg .b3 { width: 42vw; height: 42vw; left: 44vw; top: 24vh; opacity: .18;
-      background: radial-gradient(circle, #7a4bff, transparent 68%); }
-    .bg .grid { position: absolute; inset: 0;
-      background-image:
-        linear-gradient(rgba(130,180,255,.055) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(130,180,255,.055) 1px, transparent 1px);
-      background-size: 48px 48px;
-      -webkit-mask-image: radial-gradient(128% 100% at 50% 0%, #000 18%, transparent 78%);
-      mask-image: radial-gradient(128% 100% at 50% 0%, #000 18%, transparent 78%); }
-    .bg .grain { position: absolute; inset: 0; opacity: .04; pointer-events: none;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
-    ::-webkit-scrollbar { width: 10px; height: 10px; }
-    ::-webkit-scrollbar-thumb { background: #2e3d55; border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
-    ::-webkit-scrollbar-thumb:hover { background: #3d4f6b; background-clip: content-box; }
+/* Шрифты лежат рядом (public/assets/fonts): у борда нет внешних зависимостей и сети наружу.
+   Три роли: узкий condensed для заголовков, имён проектов, бейджей и цифр табло; Plex Sans
+   для задач и текста; JetBrains Mono для хешей, команд и времени. Только subsets latin
+   и cyrillic - Barlow из макета отпал именно из-за отсутствия кириллицы. */
+@font-face { font-family: "Roboto Condensed"; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url(/assets/fonts/roboto-condensed-normal-400-700-cyrillic.woff2) format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Roboto Condensed"; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url(/assets/fonts/roboto-condensed-normal-400-700-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Roboto Condensed"; font-style: italic; font-weight: 600; font-display: swap;
+  src: url(/assets/fonts/roboto-condensed-italic-600-cyrillic.woff2) format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "Roboto Condensed"; font-style: italic; font-weight: 600; font-display: swap;
+  src: url(/assets/fonts/roboto-condensed-italic-600-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url(/assets/fonts/plex-sans-normal-400-cyrillic.woff2) format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 400; font-display: swap;
+  src: url(/assets/fonts/plex-sans-normal-400-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url(/assets/fonts/plex-sans-normal-500-cyrillic.woff2) format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 500; font-display: swap;
+  src: url(/assets/fonts/plex-sans-normal-500-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url(/assets/fonts/plex-sans-normal-600-cyrillic.woff2) format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "IBM Plex Sans"; font-style: normal; font-weight: 600; font-display: swap;
+  src: url(/assets/fonts/plex-sans-normal-600-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url(/assets/fonts/jetbrains-mono-normal-400-700-cyrillic.woff2) format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116; }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400 700; font-display: swap;
+  src: url(/assets/fonts/jetbrains-mono-normal-400-700-latin.woff2) format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
 
-    header {
-      position: sticky; top: 0; z-index: 10;
-      padding: 17px 30px;
-      /* фон непрозрачный вместо backdrop-filter: размытие подложки браузер
-         обязан пересчитывать на каждом кадре, когда под ним что-то меняется. */
-      background: rgba(27,37,52,.94);
-      border-bottom: 1px solid var(--border);
-    }
-    /* содержимое шапки центрируется по той же оси, что и карточки: лого встаёт над ними.
-       Слева бренд и состояние связи, справа счётчики и управление - раньше лого, слово,
-       live и кнопка стояли одной цепочкой с равными зазорами и слипались в кашу. */
-    .hwrap { display: flex; align-items: center; gap: 16px; max-width: var(--maxw); margin: 0 auto; width: 100%; }
-    /* лого и слово это один знак, поэтому внутри зазор меньше, чем до соседей */
-    .brand { display: inline-flex; align-items: center; gap: 11px; flex: none; }
+/* Одна тема, намеренно: борд живёт тёмным на втором мониторе, светлой версии у него нет.
+   Ход палитры: холодный ночной грунт и тёплый, почти бумажный текст, как подсвеченная
+   табличка в порту. Красный значит одно: нужен ты. Латунь только рейлу и меткам канала.
+   Пять кеглей, два радиуса. */
+:root {
+  --bg: #111821;
+  --surface: #182130;   /* строки «в работе» */
+  --surface-2: #1f2a3b; /* карточки «ждут тебя» */
+  --line: #2a3648;
+  --line-hi: #3d4c63;
+  --text: #ece6d8;
+  --dim: #a9a89e;
+  --faint: #6f7684;
+  --red: #ff5a60;
+  --red-soft: #ff8d92;
+  --blue: #5aa9ff;
+  --cyan: #3fd2c1;
+  --amber: #f2b34c;
+  --green: #56cf8a;
+  --violet: #b3a6ff;
+  --brass: #cdb37a;
+  --sans: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --cond: "Roboto Condensed", "Avenir Next Condensed", "Arial Narrow", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --r-chip: 5px;
+  --r-card: 10px;
+  --maxw: 1720px;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.45 var(--sans); -webkit-font-smoothing: antialiased; overflow-x: hidden;
+}
+/* Фон статичен: пятна, сетка и зерно прежней версии убраны. Видимый фон задаёт радиальный
+   градиент поверх body - осветлять надо именно его внешний цвет, он занимает низ и края. */
+.bg { position: fixed; inset: 0; z-index: -1; background: radial-gradient(110% 60% at 50% -15%, #1f2c40, var(--bg) 70%); }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #2a3648; border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb:hover { background: #3d4c63; background-clip: content-box; }
 
-    /* сонар-логомарк: краснеет когда кто-то ждёт */
-    .mark { position: relative; width: 26px; height: 26px; display: inline-grid; place-items: center; color: var(--cyan); flex: none; }
-    .mark .core { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; z-index: 2; }
-    /* Сонар расходится только когда кто-то ждёт: без .alert кольца просто не анимируются
-       (opacity 0), и логотип стоит спокойной точкой. Иначе борд «пульсировал» одинаково
-       и в тишине, и когда тебя зовут, то есть сигнал ничего не отличал. */
-    .mark::before, .mark::after {
-      content: ""; position: absolute; inset: 4px; border-radius: 50%;
-      border: 1.5px solid currentColor; opacity: 0;
-    }
-    /* will-change поднимает кольца на свой слой: без него браузер рерастеризовывал
-       обводку с border-radius на каждом кадре масштабирования (замер: ~10% ядра) */
-    .mark.alert::before, .mark.alert::after {
-      animation: sonar 2.8s ease-out infinite; will-change: transform, opacity;
-    }
-    .mark.alert::after { animation-delay: 1.4s; }
-    @keyframes sonar { 0% { transform: scale(.3); opacity: .75; } 100% { transform: scale(1.9); opacity: 0; } }
-    .mark.alert { color: var(--red); }
+/* ---------- шапка ---------- */
+header {
+  position: sticky; top: 0; z-index: 10;
+  /* фон непрозрачный вместо backdrop-filter: размытие подложки пересчитывается каждый кадр */
+  background: rgba(17,24,33,.95); border-bottom: 1px solid var(--line);
+}
+.hwrap { display: flex; align-items: center; gap: 14px; max-width: var(--maxw); margin: 0 auto; padding: 12px 28px 10px; }
+.brand { display: inline-flex; align-items: baseline; gap: 10px; margin-right: 8px; }
+/* сонар-логомарк: краснеет и расходится кольцами, только когда кто-то ждёт */
+.mark { position: relative; width: 22px; height: 22px; display: grid; place-items: center; color: var(--cyan); align-self: center; }
+.mark .core { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+.mark::before, .mark::after { content: ""; position: absolute; inset: 2px; border-radius: 50%; border: 1.5px solid currentColor; opacity: 0; }
+/* will-change поднимает кольца на свой слой: без него обводка с border-radius рерастеризовывалась каждый кадр */
+.mark.alert { color: var(--red); }
+.mark.alert::before, .mark.alert::after { animation: sonar 2.8s ease-out infinite; will-change: transform, opacity; }
+.mark.alert::after { animation-delay: 1.4s; }
+@keyframes sonar { 0% { transform: scale(.3); opacity: .75; } 100% { transform: scale(1.9); opacity: 0; } }
+.word { font: italic 600 26px/1 var(--cond); letter-spacing: .3px; }
+.word small { font: 500 12px/1 var(--cond); color: var(--faint); letter-spacing: 1px; margin-left: 8px; font-style: normal; }
+.word small:empty { display: none; }
 
-    .word {
-      font-size: 22px; font-weight: 800; letter-spacing: .4px;
-      background: linear-gradient(90deg, #eaf6ff, #9fd8ff 60%, #35d6c4);
-      -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-    }
+.live { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--dim);
+  border: 1px solid var(--line); border-radius: 20px; padding: 3px 11px; white-space: nowrap; }
+/* точка связи статична: связь читается цветом, движение для этого не нужно */
+.live .pulse { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+.live.off .pulse { background: var(--faint); }
 
-    /* состояние связи - отдельная плашка, а не текст впритык к логотипу */
-    .live { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--dim);
-      background: rgba(255,255,255,.05); border: 1px solid var(--border); border-radius: 20px; padding: 4px 13px; flex: none; }
-    .live .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex: none; }
-    /* свечение статично: пульсация анимировала box-shadow (перерисовка, не композит),
-       и одна эта точка 7x7 держала рендер-луп страницы на 60fps вечно. Связь читается
-       цветом - зелёная против серой у .off, движение для этого не нужно. */
-    .live.on .pulse { box-shadow: 0 0 0 3px rgba(71,201,122,.18); }
-    .live.off .pulse { background: var(--faint); }
+/* борд встретил событие хука, которого не знает - вероятно, обновился Claude Code */
+.unknown { font-size: 12px; color: var(--amber); background: rgba(242,179,76,.1); border: 1px solid rgba(242,179,76,.3);
+  border-radius: 20px; padding: 2px 10px; cursor: help; white-space: nowrap; }
 
-    /* окно лимита Claude. Плашка одна и живёт в шапке, а не в карточке: лимит привязан
-       к аккаунту, а не к проекту - все сессии во всех папках жгут общую квоту, и в каждой
-       строке это было бы одно и то же число. Цвет нейтральный намеренно: красное на борде
-       означает «нужен ты», а окно это справка, а не призыв к действию. */
-    .win { display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; color: var(--dim);
-      background: rgba(255,255,255,.05); border: 1px solid var(--border); border-radius: 20px;
-      padding: 4px 13px; margin-left: 10px; flex: none; cursor: help; }
-    .win b { color: var(--text); font-weight: 700; font-variant-numeric: tabular-nums; }
-    .win .at { color: var(--faint); }
-    .win.done { color: var(--faint); }
-    /* обязательно: display в классе перебивает атрибут hidden по специфичности, и пока
-       сервер не прислал окно, в шапке висела пустая пилюля-призрак */
-    .win[hidden] { display: none; }
+.counts { margin-left: auto; display: flex; align-items: baseline; gap: 14px; font: 500 15px/1 var(--cond); color: var(--dim); }
+.counts b { font-size: 22px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.counts .w, .counts .w b { color: var(--red); }
 
-    /* тумблер системных уведомлений: по умолчанию выключен, звука нет никогда.
-       Нужен для случая "сижу в фуллскрине IDE" - борда не видно, даже favicon-бейджа. */
-    .bell {
-      display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; flex: none;
-      margin-left: 18px;
-      background: rgba(255,255,255,.04); border: 1px solid var(--border); border-radius: 10px;
-      color: var(--dim); cursor: pointer; transition: color .15s, border-color .15s, background .15s;
-    }
-    .bell:hover { color: var(--text); border-color: var(--dim); background: rgba(255,255,255,.07); }
-    .bell.on { color: var(--cyan); border-color: rgba(53,214,196,.5); background: rgba(53,214,196,.1); }
-    .bell.on .slash { display: none; }
-    .bell:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+/* тумблер системных уведомлений: по умолчанию выключен, звука нет никогда */
+.bell { width: 34px; height: 34px; display: grid; place-items: center; padding: 0; border-radius: 8px; background: transparent;
+  border: 1px solid var(--line); color: var(--dim); cursor: pointer; transition: color .15s, border-color .15s; }
+.bell:hover { color: var(--text); border-color: var(--line-hi); }
+.bell.on { color: var(--cyan); border-color: rgba(63,210,193,.5); }
+.bell.on .slash { display: none; }
+.bell:focus-visible, .unit:focus-visible, .act:focus-visible, .reply input:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
 
-    /* борд встретил событие хука, которого не знает - вероятно, обновился Claude Code
-       и схема разъехалась. Тихо игнорировать нельзя: карточки начнут молча врать. */
-    .unknown {
-      margin-left: auto; font-size: 12.5px; color: var(--amber);
-      background: rgba(255,180,84,.1); border: 1px solid rgba(255,180,84,.3);
-      border-radius: 20px; padding: 2px 10px; cursor: help;
-    }
-    /* :not([hidden]) обязателен: скрытый бейдж остаётся соседом в DOM, и без этого
-       правило перебивало margin-left:auto у счётчика, сдвигая его от правого края */
-    .unknown:not([hidden]) + .counts { margin-left: 14px; }
+/* ---------- рейл гавани: последние часы одной линией ---------- */
+.rail { max-width: var(--maxw); margin: 0 auto; padding: 0 28px 10px; }
+.rail .axis { position: relative; height: 36px; }
+.rail .base { position: absolute; left: 0; right: 0; top: 22px; height: 1px; background: var(--line-hi); }
+.rail .win { position: absolute; top: 19px; height: 7px; border-radius: 2px; background: rgba(205,179,122,.22); border: 1px solid rgba(205,179,122,.45); }
+.rail .win::after { content: attr(data-label); position: absolute; right: 0; top: -17px; font: 500 12px/1 var(--cond);
+  letter-spacing: .4px; color: var(--brass); white-space: nowrap; }
+.rail .win::before { content: attr(data-start); position: absolute; left: 0; top: -17px; font: 500 12px/1 var(--cond); color: var(--brass); opacity: .7; white-space: nowrap; }
+.rail .fresh { position: absolute; right: 0; top: 2px; font: 500 12px/1 var(--cond); letter-spacing: .4px; color: var(--brass); opacity: .8; white-space: nowrap; }
+.rail .tick { position: absolute; top: 15px; width: 2px; height: 15px; border-radius: 1px; background: var(--tk, var(--faint)); }
+.rail .tick.wait { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.rail .now { position: absolute; top: 10px; width: 1px; height: 24px; background: var(--text); }
+.rail .now::after { content: attr(data-label); position: absolute; left: 6px; top: -1px; font: 500 12px/1 var(--cond); letter-spacing: .4px; color: var(--text); white-space: nowrap; }
+.rail .hour { position: absolute; top: 26px; font: 11px/1 var(--mono); color: var(--faint); transform: translateX(-50%); }
 
-    .counts { margin-left: auto; font-size: 14.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
-    .counts b { color: var(--text); font-weight: 700; }
-    .counts .w { color: var(--red); font-weight: 600; }
-    .agent-counts { display: inline-flex; gap: 6px; margin-left: 7px; font-size: 11.5px; }
-    .agent-counts > span { border-radius: 6px; padding: 1px 6px; border: 1px solid; }
-    .agent-counts .ac-claude { color: #e7b77f; background: rgba(231,183,127,.08); border-color: rgba(231,183,127,.28); }
-    .agent-counts .ac-codex { color: #77d8bd; background: rgba(119,216,189,.08); border-color: rgba(119,216,189,.28); }
+/* ---------- секции ---------- */
+main { max-width: var(--maxw); margin: 0 auto; padding: 4px 28px 60px; }
+.sec { margin-top: 26px; }
+.sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; font: 600 22px/1 var(--cond); letter-spacing: .2px; }
+.sec-head .n { font: 500 15px/1 var(--mono); color: var(--faint); }
+.sec-head.attn, .sec-head.attn .n { color: var(--red); }
+.sec-head::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--line-hi), transparent); align-self: center; margin-left: 6px; }
+/* расходящееся кольцо - отдельный слой на transform/opacity, не box-shadow */
+.sec-head .ping { position: relative; align-self: center; width: 8px; height: 8px; border-radius: 50%; background: var(--red); }
+.sec-head .ping::after { content: ""; position: absolute; inset: 0; border-radius: 50%; background: rgba(255,90,96,.55);
+  animation: ping 1.8s ease-out infinite; will-change: transform, opacity; }
+@keyframes ping { 0% { transform: scale(1); opacity: .55; } 70%,100% { transform: scale(3); opacity: 0; } }
 
-    main { padding: 10px 26px 70px; max-width: var(--maxw); margin: 0 auto; }
-    .sec { margin-top: 28px; }
-    .sec:first-child { margin-top: 16px; }
-    .sec-head {
-      display: flex; align-items: center; gap: 10px;
-      font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;
-      color: var(--faint); margin-bottom: 14px;
-    }
-    .sec-head.attn { color: var(--red); }
-    /* расходящееся кольцо - отдельный слой на transform/opacity. Пульсация через
-       box-shadow стоила ~13% ядра: спред тени перерисовывается каждый кадр, и
-       размер точки тут не спасает. Тот же приём, что у сонара логомарки. */
-    .sec-head .ping { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
-    .sec-head .ping::after {
-      content: ""; position: absolute; inset: 0; border-radius: 50%;
-      background: rgba(255,93,99,.55);
-      animation: ping 1.8s ease-out infinite; will-change: transform, opacity;
-    }
-    @keyframes ping { 0% { transform: scale(1); opacity: .55; } 70%,100% { transform: scale(3); opacity: 0; } }
-    .cnt {
-      font-size: 12px; color: var(--dim); background: rgba(255,255,255,.04);
-      border: 1px solid var(--border); border-radius: 20px; padding: 1px 8px; letter-spacing: 0; font-weight: 600;
-    }
+/* ---------- атомы ---------- */
+/* монограмма проекта вместо цветной точки: WebStorm и Alacritty уже красят окружение своими
+   цветами, второй такой же язык цвета спорил бы с ними. Оттенок выводится из имени папки. */
+.avatar { width: 26px; height: 26px; border-radius: 7px; display: inline-grid; place-items: center; flex: none;
+  font: 500 11px/1 var(--mono); background: var(--av-bg); color: var(--av-fg); border: 1px solid var(--av-br); }
+.proj { font: 600 15px/1.2 var(--cond); letter-spacing: .2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* чип git-worktree: пунктир, а не сплошная плашка - сплошная это метка терминала */
+.wtree { font: 500 11.5px/1.6 var(--mono); color: var(--violet); border: 1px dashed rgba(179,166,255,.5); border-radius: var(--r-chip);
+  padding: 0 6px; white-space: nowrap; flex: none; max-width: 14em; overflow: hidden; text-overflow: ellipsis; }
+.badge { display: inline-flex; align-items: center; gap: 6px; font: 500 13.5px/1 var(--cond); letter-spacing: .3px; white-space: nowrap;
+  padding: 5px 10px 5px 9px; border-radius: var(--r-chip); border: 1px solid transparent; }
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.badge.busy { color: #8fbfff; background: rgba(90,169,255,.12); border-color: rgba(90,169,255,.35); }
+.badge.ready { color: var(--dim); background: rgba(169,168,158,.08); border-color: rgba(169,168,158,.28); }
+.badge.error { color: var(--amber); background: rgba(242,179,76,.12); border-color: rgba(242,179,76,.35); }
+.badge.waiting { color: var(--red-soft); background: rgba(255,90,96,.14); border-color: rgba(255,90,96,.45); }
+/* закончил ход: нейтрально, красное на борде значит только «нужен ты» */
+.badge.done { color: var(--text); background: rgba(255,255,255,.06); border-color: var(--line-hi); }
+.tool { display: inline-flex; align-items: center; gap: 7px; min-width: 0; max-width: 100%; font: 12.5px/1.6 var(--mono); color: var(--cyan);
+  background: rgba(63,210,193,.08); border: 1px solid rgba(63,210,193,.26); border-radius: var(--r-chip); padding: 2px 9px; }
+/* многоточие на внутреннем span: text-overflow не действует на flex-контейнер */
+.tool .tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .tn { color: var(--dim); }
+.origin { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; font-size: 12.5px; color: var(--dim); }
+.agent { color: var(--faint); }
+.term { display: inline-flex; align-items: center; gap: 6px; }
+/* маркер терминала брендовым цветом (--tc из termColor) */
+.term::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--tc, var(--dim)); }
+.age { font: 12.5px/1 var(--mono); color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.kill { width: 26px; height: 26px; display: grid; place-items: center; padding: 0; border-radius: var(--r-chip); background: transparent;
+  border: 1px solid transparent; color: var(--faint); font-size: 17px; line-height: 1; cursor: pointer; opacity: .35;
+  transition: opacity .15s, color .15s, border-color .15s; }
+.unit:hover .kill, .kill:focus-visible { opacity: 1; }
+.kill:hover { color: var(--red); border-color: rgba(255,90,96,.5); }
 
-    /* Дерево читается от работы к исполнителю: проект → Claude/Codex → сессии. Раньше
-       порядок был обратный, поэтому один cwd распадался на две далёкие группы. */
-    .project-tree { margin: 18px 0 32px; }
-    .project-tree + .project-tree { margin-top: 34px; }
-    .project-head {
-      display: flex; align-items: center; gap: 12px; min-height: 38px;
-      font-size: 20px; color: var(--text); letter-spacing: -.2px;
-    }
-    .project-head .avatar {
-      width: 36px; height: 36px; border-radius: 11px; flex: none;
-      display: inline-grid; place-items: center;
-      font-size: 13px; font-weight: 800; letter-spacing: .2px; font-variant-numeric: tabular-nums;
-      background: var(--av-bg); color: var(--av-fg); border: 1px solid var(--av-br);
-    }
-    .project-head b { font-weight: 760; }
-    .project-head::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border), transparent); }
-    .project-agents { display: inline-flex; gap: 6px; margin-left: 4px; }
-    .project-agent {
-      font-size: 11.5px; font-weight: 650; padding: 1px 7px; border-radius: 6px;
-      border: 1px solid; white-space: nowrap;
-    }
-    .project-agent.a-claude { color: #e7b77f; background: rgba(231,183,127,.08); border-color: rgba(231,183,127,.28); }
-    .project-agent.a-codex { color: #77d8bd; background: rgba(119,216,189,.08); border-color: rgba(119,216,189,.28); }
+/* искра активности: события за последние 10 минут, столбик на минуту. Живая сессия
+   читается по форме искры раньше, чем по бейджу; это движение данных, а не анимация */
+.spark { display: inline-flex; align-items: flex-end; gap: 2px; height: 16px; }
+.spark i { width: 4px; border-radius: 1px; background: var(--blue); opacity: .85; height: calc(var(--v, 0) * 1%); min-height: 2px; }
+.spark.quiet i { background: var(--faint); opacity: .5; }
 
-    .project-branches {
-      position: relative; margin: 10px 0 0 18px; padding-left: 30px;
-      border-left: 1px solid rgba(124,136,153,.38);
-    }
-    .agent-branch {
-      --agent: #aab4c4; --agent-bg: rgba(170,180,196,.08); --agent-br: rgba(170,180,196,.25);
-      position: relative; padding: 4px 0 0; margin-bottom: 18px;
-    }
-    .agent-branch:last-child { margin-bottom: 0; padding-bottom: 2px; }
-    .agent-branch::before {
-      content: ""; position: absolute; left: -30px; top: 17px; width: 21px;
-      border-top: 1px solid var(--agent-br);
-    }
-    .agent-branch.a-claude { --agent: #e7b77f; --agent-bg: rgba(231,183,127,.10); --agent-br: rgba(231,183,127,.38); }
-    .agent-branch.a-codex { --agent: #77d8bd; --agent-bg: rgba(119,216,189,.10); --agent-br: rgba(119,216,189,.38); }
-    .branch-head {
-      display: flex; align-items: center; gap: 9px; height: 28px; margin: 0 0 8px;
-      color: var(--agent); font-size: 13px; letter-spacing: .2px;
-    }
-    .branch-head .agent-symbol {
-      width: 29px; height: 24px; display: inline-grid; place-items: center; border-radius: 7px;
-      color: var(--agent); background: var(--agent-bg); border: 1px solid var(--agent-br);
-      font: 750 10px/1 ui-monospace, "SF Mono", Menlo, monospace; letter-spacing: -.3px;
-    }
-    .branch-head b { font-weight: 700; }
-    .branch-head .cnt { color: var(--agent); border-color: var(--agent-br); background: var(--agent-bg); }
+/* ---------- ждут тебя ---------- */
+/* auto-fill считает число колонок по МАКСИМУМУ дорожки: потолок 600, а не больше,
+   иначе на мониторе 1900px влезало бы две карточки вместо трёх */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(460px, 600px)); justify-content: start; gap: 14px; }
+.card { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto 1fr auto; column-gap: 18px; row-gap: 10px;
+  padding: 16px 18px 14px 20px; border-radius: var(--r-card); cursor: pointer;
+  background: linear-gradient(160deg, rgba(255,90,96,.12), var(--surface-2) 55%);
+  border: 1px solid rgba(255,90,96,.38); overflow: hidden; transition: transform .12s ease, border-color .15s; }
+.card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--red); }
+.card:hover { transform: translateY(-2px); border-color: rgba(255,90,96,.6); }
+/* Дыхание - отдельный слой, анимируется ТОЛЬКО его opacity. Пульсация box-shadow самой
+   карточки стоила ~21% ядра. Тень внутренняя: .card обрезает содержимое. */
+.card .glow { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; opacity: 0;
+  box-shadow: inset 0 0 26px 2px rgba(255,90,96,.26); animation: breathe 2.2s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { opacity: 0; } 50% { opacity: 1; } }
+.card .top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.card .who { display: inline-flex; align-items: center; gap: 8px; min-width: 0; color: var(--dim); }
+.card .who .proj { color: var(--dim); font-weight: 500; }
+/* главная цифра красной карточки: сколько она уже ждёт. Крупно, как задержка на табло */
+.card .timer { grid-row: 1 / 3; grid-column: 2; align-self: start; text-align: right; padding-right: 28px; }
+.card .timer b { display: block; font: 600 44px/1 var(--cond); letter-spacing: -.5px; color: var(--text); font-variant-numeric: tabular-nums; }
+.card .timer span { font: 500 12px/1 var(--cond); letter-spacing: .8px; color: var(--red-soft); }
+/* секция «закончили ход»: та же форма без красного и без .glow - сессия стоит без промпта,
+   но помощи не просит, и движение ей не положено */
+.card.done { background: var(--surface-2); border-color: var(--line-hi); }
+.card.done::before { background: var(--dim); }
+.card.done:hover { border-color: var(--faint); }
+.card.done .timer span { color: var(--dim); }
+.card .body { grid-column: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 9px; min-width: 0; }
+.card .ask { font-size: 17px; line-height: 1.35; color: var(--text); font-weight: 500; text-wrap: balance; word-break: break-word; }
+.card .task { font-size: 13.5px; color: var(--dim); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; }
+.card .foot { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; min-width: 0; }
+.card .foot .origin { margin-left: auto; }
+.card .kill { position: absolute; top: 11px; right: 11px; }
+/* ответ прямо с борда: элементы есть только у карточки с подключённым каналом */
+.acts { display: flex; align-items: center; gap: 8px; }
+.act { font: 500 13.5px/1 var(--cond); letter-spacing: .3px; padding: 7px 12px; border-radius: var(--r-chip); cursor: pointer;
+  border: 1px solid var(--line-hi); background: rgba(255,255,255,.03); color: var(--text); }
+.act.ok { border-color: rgba(86,207,138,.5); color: #8fe3b1; }
+.act.no { border-color: rgba(255,90,96,.45); color: var(--red-soft); }
+.act:hover { background: rgba(255,255,255,.07); }
+.reply { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; margin: 0; }
+.reply input { flex: 1; min-width: 0; font: 13.5px var(--sans); color: var(--text); background: rgba(0,0,0,.22);
+  border: 1px solid var(--line-hi); border-radius: var(--r-chip); padding: 6px 10px; }
+.reply input::placeholder { color: var(--faint); }
+.needs { font: 500 11px/1 var(--cond); letter-spacing: .6px; color: var(--brass); border: 1px dashed rgba(205,179,122,.5); border-radius: var(--r-chip); padding: 3px 6px; white-space: nowrap; }
 
-    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+/* ---------- в работе: одна таблица на секцию ---------- */
+/* Колонки задаёт контейнер, строки берут их через subgrid: ширины меряются по всей секции,
+   и бейджи, возраст и метки терминала стоят ровным столбцом. Тянется только задача;
+   колонка инструмента ограничена fit-content, иначе длинная команда съедала бы задачу. */
+.tbl { display: grid; grid-template-columns: 224px minmax(0, 1fr) fit-content(420px) 60px max-content max-content max-content 40px;
+  column-gap: 18px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); overflow: hidden; }
+.row { position: relative; grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center;
+  min-height: 48px; border-top: 1px solid var(--line); cursor: pointer; transition: background .14s; }
+.row:first-child { border-top: 0; }
+.row:hover { background: var(--surface-2); }
+/* полоска статуса статична: бегущий градиент был вознёй на периферии зрения */
+.row::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: transparent; }
+.row.s-thinking::before, .row.s-tool::before, .row.s-working::before, .row.s-compacting::before { background: var(--blue); }
+.row.s-error::before { background: var(--amber); }
+.row > * { min-width: 0; }
+.row .c-proj { display: flex; align-items: center; gap: 9px; padding-left: 16px; }
+/* дерево свёрнуто в первую колонку: первая строка проекта несёт монограмму и имя,
+   следующие - уголок продолжения. Хрома над строкой больше нет. */
+.row.cont .c-proj { padding-left: 25px; }
+.row.cont .c-proj .avatar { display: none; }
+.row.cont .c-proj::before { content: ""; width: 9px; height: 9px; flex: none; border-left: 1px solid var(--line-hi); border-bottom: 1px solid var(--line-hi); margin: -8px 4px 0 6px; }
+.row.cont .proj { color: var(--dim); font-weight: 500; }
+.row .c-task { display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.row .c-task .none { color: var(--faint); font-style: italic; }
+.row .c-act { display: flex; min-width: 0; }
+.row .badge { justify-self: start; }
+.row .c-end { padding-right: 8px; display: grid; place-items: center; }
+/* «протухание»: активная строка без событий дольше порога тускнеет, вместо тула - подпись */
+.idle { display: none; align-items: center; gap: 6px; font-size: 12.5px; color: var(--amber); white-space: nowrap; }
+.idle::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.row.stale { opacity: .55; }
+.row.stale::before { background: var(--faint); }
+.row.stale .tool { display: none; }
+.row.stale .idle { display: inline-flex; }
 
-    /* Ждущие карточки крупнее всего остального. Раньше было наоборот: секция растягивала
-       единственную карточку по сетке в 5 колонок, и самая важная карточка на борде
-       оказывалась физически самой мелкой. justify-content:start - чтобы одна карточка
-       не расползалась на весь монитор. */
-    [data-slot^="w:"] {
-      /* auto-fill считает число колонок по МАКСИМУМУ дорожки, поэтому потолок 600, а не 640:
-         на мониторе 1900px это даёт три крупные карточки в ряд вместо двух */
-      grid-template-columns: repeat(auto-fill, minmax(460px, 600px));
-      justify-content: start; gap: 18px;
-    }
-    [data-slot^="w:"] .card { min-height: 134px; padding: 19px 22px 16px 24px; }
-    [data-slot^="w:"] .title { font-size: 16.5px; -webkit-line-clamp: 2; }
-    [data-slot^="w:"] .note { font-size: 15px; }
-    [data-slot^="w:"] .badge { font-size: 13.5px; padding: 5px 13px; }
-    [data-slot^="w:"] .sid { font-size: 13px; }
-    /* Проект и агент уже названы двумя уровнями дерева — в самой карточке/строке не
-       дублируем их ещё раз. Терминал оставляем: он различает две сессии одного агента. */
-    .waiting-tree .card .proj, .project-tree .unit .agent-tag { display: none; }
+/* «Никто не ждёт»: без этого спокойный борд выглядит так же, как борд, на который смотрят не туда */
+.calm { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: var(--r-card);
+  border: 1px solid rgba(86,207,138,.25); background: rgba(86,207,138,.06); color: #9fe0b8; font-size: 13.5px; }
+.calm i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+.calm b { font: 600 16px/1 var(--cond); letter-spacing: .3px; }
+.calm span { color: var(--faint); }
 
-    .card {
-      position: relative; overflow: hidden;
-      /* container-запросы по ширине самой карточки: в узкой колонке прячем необязательное,
-         вместо того чтобы сжимать всё подряд и показывать огрызки вроде одинокой решётки */
-      container-type: inline-size;
-      /* min-height только чтобы карточка не схлопнулась в полоску: карточки одного ряда
-         и так выравниваются растяжением сетки. Большое значение делало пустую карточку
-         "готов к работе" такой же высокой, как карточку с задачей и инструментом. */
-      display: flex; flex-direction: column; width: 100%; min-height: 112px; text-align: left;
-      background: linear-gradient(158deg, var(--surface-2), #1e2938);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px 18px 14px 20px;
-      color: inherit; font: inherit; cursor: pointer;
-      transition: transform .12s ease, border-color .16s, box-shadow .2s;
-    }
-    .card:hover { transform: translateY(-3px); border-color: var(--border-hi); box-shadow: 0 12px 30px rgba(0,0,0,.4); }
-    .card:active { transform: translateY(-1px); }
-    .card:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-    /* сияние-развёртка на ховере */
-    .card::after {
-      content: ""; position: absolute; inset: 0; pointer-events: none; opacity: 0;
-      background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,.05) 50%, transparent 70%);
-      transition: opacity .3s;
-    }
-    .card:hover::after { opacity: 1; }
+.empty { color: var(--dim); text-align: center; margin-top: 14vh; font: 600 20px/1.3 var(--cond); }
+.empty small { display: block; margin-top: 9px; color: var(--faint); font: 13px/1.4 var(--sans); }
 
-    /* живой край: геометрия у карточки и строки своя, а цвет статуса общий (.unit) */
-    .card::before {
-      content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-      background: var(--faint);
-    }
-    .unit.s-ready::before { background: #4a5a72; }
-    /* Полоска активной сессии статична. Раньше по ней бежал градиент, и на борде с несколькими
-       рабочими сессиями это была постоянная возня на периферии зрения, которая ничего не
-       сообщала: сессия работает и так видно по статусу. Движение оставлено только там, где
-       от тебя чего-то ждут, - тогда оно значит «нужен ты», а не просто «страница живая». */
-    .unit.s-thinking::before, .unit.s-tool::before, .unit.s-working::before, .unit.s-compacting::before {
-      background: linear-gradient(180deg, var(--blue), var(--cyan));
-    }
-    .unit.s-error::before { background: var(--amber); }
-    .unit.s-waiting::before { background: var(--red); }
+.toast {
+  position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(12px);
+  background: var(--surface-2); color: var(--text); border: 1px solid var(--line-hi);
+  padding: 11px 16px; border-radius: var(--r-card); font-size: 13.5px; max-width: 90vw;
+  box-shadow: 0 12px 34px rgba(0,0,0,.5); opacity: 0; pointer-events: none; z-index: 50;
+  transition: opacity .2s, transform .2s;
+}
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-    /* карточка "ждёт тебя" дышит красным */
-    .card.s-waiting {
-      background: linear-gradient(158deg, rgba(255,93,99,.15), #232f44 58%);
-      border-color: rgba(255,93,99,.4);
-      box-shadow: 0 8px 22px rgba(0,0,0,.35);
-    }
-    /* Дыхание вынесено отдельным слоем, и анимируется у него ТОЛЬКО opacity.
-       Пока пульсировал box-shadow самой карточки, браузер пересчитывал размытие
-       по всему её периметру каждый кадр: замер дал ~21% ядра на одну карточку
-       шириной 600px. Тень внутренняя, потому что .card обрезает содержимое
-       (overflow: hidden) и наружное свечение всё равно не было бы видно.
-       Не анимировать здесь box-shadow, background или border-color: это перерисовка,
-       а не композит. */
-    .glow { display: none; }
-    .card.s-waiting .glow {
-      display: block; position: absolute; inset: 0; border-radius: inherit;
-      pointer-events: none; opacity: 0;
-      box-shadow: inset 0 0 26px 2px rgba(255,93,99,.30);
-      animation: breathe 2.2s ease-in-out infinite;
-    }
-    @keyframes breathe { 0%,100% { opacity: 0; } 50% { opacity: 1; } }
-
-    /* padding-right держит место под кнопку удаления в углу: иначе она ложится на бейдж */
-    .chead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; padding-right: 32px; }
-    .pname { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-    /* имя проекта - главное на карточке, поэтому сжимается последним: min-width держит его
-       читаемым, а необязательный возраст сессии прячется первым (см. .dur ниже) */
-    .proj { font-weight: 700; font-size: 15.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 7em; }
-    /* хеш сессии сжимается раньше имени проекта: без flex-сжатия он выдавливал бы бейдж
-       на текст соседа (элементы с flex:none просто накладываются друг на друга) */
-    .sid { font-size: 12px; color: var(--faint); font-family: ui-monospace, "SF Mono", Menlo, monospace; flex: none; white-space: nowrap; }
-    /* Сессия в git-worktree стоит в группе родительского проекта (это та же работа в
-       изолированной копии), а имя копии называет этот чип. Рамка пунктирная намеренно:
-       со сплошной он читался бы как метка терминала, а это разные вещи. */
-    .wtree { font-size: 11.5px; color: var(--violet); background: rgba(169, 155, 255, .10);
-             border: 1px dashed rgba(169, 155, 255, .45); border-radius: 5px;
-             padding: 0 6px; white-space: nowrap; flex: 0 1 auto; min-width: 4em; max-width: 14em;
-             overflow: hidden; text-overflow: ellipsis;
-             font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-    .row .wtree { margin-right: 8px; }
-    /* В шапке карточки на всех места нет, а элементы с flex:none накладываются друг на друга.
-       Хеш уступает: имя копии объясняет, почему в проекте две сессии, а хеш - восемь цифр. */
-    .card .pname:has(.wtree) .sid { display: none; }
-    /* места мало - хеш и возраст уходят первыми, имя проекта и статус остаются */
-    @container (max-width: 430px) { .dur { display: none; } }
-    @container (max-width: 360px) { .sid { display: none; } }
-    .dur { font-size: 12px; color: var(--faint); flex: 0 1 auto; overflow: hidden; white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .dur::before { content: "·"; margin: 0 5px; opacity: .6; }
-
-    .badge {
-      flex: none; font-size: 12.5px; font-weight: 600; letter-spacing: .2px;
-      padding: 4px 11px; border-radius: 20px; white-space: nowrap; border: 1px solid transparent;
-    }
-    .badge.busy  { background: rgba(77,157,255,.13); color: #7fb6ff; border-color: rgba(77,157,255,.4); }
-    .badge.error { background: rgba(255,180,84,.13); color: var(--amber); border-color: rgba(255,180,84,.36); }
-    .badge.waiting { background: rgba(255,93,99,.17); color: #ff8a8e; border-color: rgba(255,93,99,.45); }
-    .badge.ready { background: rgba(139,149,166,.12); color: var(--dim); border-color: rgba(139,149,166,.28); }
-
-    /* текст уведомления: чего именно ждут ("Claude needs your permission to use Bash") */
-    .note {
-      font-size: 13.5px; line-height: 1.5; color: #ffb9bc; margin: 0 0 9px;
-      padding-left: 9px; border-left: 2px solid rgba(255,93,99,.45); word-break: break-word;
-      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-    }
-
-    /* убрать карточку руками: зомби после закрытия терминала иначе висит часами до pruneStale */
-    .kill {
-      position: absolute; top: 9px; right: 9px; width: 30px; height: 30px; line-height: 1;
-      display: grid; place-items: center; padding: 0;
-      background: rgba(24,33,48,.85); color: var(--dim); border: 1px solid var(--border-hi);
-      border-radius: 8px; font-size: 19px; cursor: pointer;
-      /* приглушён, но виден всегда: иначе о возможности убрать карточку просто не догадаться */
-      opacity: .3;
-      transition: opacity .15s, color .15s, border-color .15s, background .15s;
-    }
-    .unit:hover .kill, .kill:focus-visible { opacity: 1; }
-    .kill:hover { color: var(--red); border-color: rgba(255,93,99,.6); background: rgba(255,93,99,.12); }
-
-    .title {
-      font-size: 14.5px; line-height: 1.55; color: var(--dim); margin: 3px 0 11px; word-break: break-word;
-      display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
-    }
-    .card.s-waiting .title { color: var(--text); }
-
-    .tool {
-      display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--cyan);
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      background: rgba(53,214,196,.1); border: 1px solid rgba(53,214,196,.26);
-      padding: 3px 9px; border-radius: 7px; margin-bottom: 10px;
-      min-width: 0; overflow: hidden; white-space: nowrap;
-    }
-    .tool .d { width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 6px var(--cyan); flex: none; }
-    /* Многоточие вешаем на внутренний span, а не на .tool: text-overflow не действует на
-       flex-контейнер, и длинная команда обрубалась ровно по букве («.../src/featu»),
-       выглядя как баг рендера, а не как усечение. */
-    .tool .tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-    /* margin-top:auto прижимает подвал вниз - карточки с min-height выглядят выровненными */
-    .foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 12px; color: var(--faint); margin-top: auto; }
-    .src { opacity: .7; letter-spacing: .3px; }
-    .origin { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
-    .agent-tag {
-      --agent: var(--dim); --agent-bg: rgba(255,255,255,.04); --agent-br: var(--border);
-      display: inline-flex; align-items: center; gap: 5px; flex: none;
-      font-size: 11.5px; font-weight: 650; color: var(--agent); background: var(--agent-bg);
-      border: 1px solid var(--agent-br); border-radius: 6px; padding: 1px 7px; white-space: nowrap;
-    }
-    .agent-tag.a-claude { --agent: #e7b77f; --agent-bg: rgba(231,183,127,.08); --agent-br: rgba(231,183,127,.28); }
-    .agent-tag.a-codex { --agent: #77d8bd; --agent-bg: rgba(119,216,189,.08); --agent-br: rgba(119,216,189,.28); }
-    .agent-dot { width: 6px; height: 6px; border-radius: 2px; background: currentColor; }
-    .term { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--dim);
-      background: rgba(255,255,255,.045); border: 1px solid var(--border); border-radius: 6px; padding: 1px 7px; white-space: nowrap; }
-    /* маркер терминала брендовым цветом (--tc задаётся на карточке из termColor) */
-    .term::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--tc, currentColor); box-shadow: 0 0 5px var(--tc, transparent); opacity: .95; }
-
-    /* «протухание»: активная карточка без событий дольше порога - вероятно сессия подвисла/закрыта */
-    .idle { display: none; align-items: center; gap: 5px; font-size: 11.5px; color: var(--amber); white-space: nowrap; }
-    .idle::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: .8; }
-    .card.stale { opacity: .5; filter: saturate(.7); }
-    .card.stale::before { animation: none; background: var(--faint) !important; }
-    .card.stale .idle { display: inline-flex; }
-    .card.stale .term { display: none; }
-
-    /* «В работе»: плотные строки вместо карточек. Работающая сессия не требует действий,
-       ей хватает одной строки - а площадь и вес отдаём красной секции, ради которой
-       борд и существует. Колонки у всех строк общие, поэтому статусы читаются столбцом
-       с расстояния, не вчитываясь в каждую строку отдельно. */
-    .rows { display: flex; flex-direction: column; gap: 6px; }
-    .row {
-      position: relative; display: grid; align-items: center; gap: 16px;
-      /* Ширины фиксированные, а не auto: каждая строка это отдельный grid, и auto-колонка
-         меряется по СВОЕМУ содержимому - бейджи и время разъезжались бы по строкам.
-         Тянется только задача, поэтому все остальные колонки стоят ровным столбцом. */
-      grid-template-columns: 92px minmax(0, 1fr) 340px 162px 96px 190px;
-      padding: 13px 46px 13px 18px;
-      background: linear-gradient(90deg, var(--surface), rgba(31,42,60,.78));
-      border: 1px solid var(--border); border-radius: 11px;
-      color: inherit; font: inherit; text-align: left; cursor: pointer;
-      transition: background .14s, border-color .14s, transform .1s;
-    }
-    .row::before {
-      content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
-      border-radius: 11px 0 0 11px; background: var(--faint);
-    }
-    .row:hover { background: linear-gradient(90deg, #2c3b55, #242f44); border-color: var(--border-hi); transform: translateX(2px); }
-    .row:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
-    .row .sid { font-size: 12.5px; }
-    /* задача в одну строку: в плотном режиме важнее ровный ритм строк, чем весь текст */
-    .row .rtask { font-size: 15px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-    .row .tool { margin: 0; font-size: 13px; padding: 3px 10px; max-width: 100%; justify-self: start; }
-    .row .rend { display: flex; justify-content: flex-end; min-width: 0; }
-    .row .badge { font-size: 13px; padding: 4px 11px; justify-self: start; }
-    .row .dur { font-size: 13px; color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
-    .row .dur::before { content: none; }
-    .row .term { font-size: 12.5px; }
-    .row .idle { display: none; font-size: 12.5px; }
-    .row .kill { top: 50%; right: 9px; transform: translateY(-50%); width: 26px; height: 26px; font-size: 16px; }
-    .row.stale { opacity: .5; filter: saturate(.7); }
-    .row.stale::before { animation: none; background: var(--faint) !important; }
-    .row.stale .idle { display: inline-flex; }
-    .row.stale .term { display: none; }
-    /* борд живёт на широком мониторе, но при сужении необязательное уходит первым */
-    @media (max-width: 1250px) { .row .sid { display: none; } .row { grid-template-columns: minmax(0, 1fr) 260px 150px 88px 170px; } }
-    @media (max-width: 900px)  { .row .term { display: none; } }
-    @media (max-width: 1100px) { .agent-counts { display: none; } }
-    @media (max-width: 700px) {
-      .project-branches { margin-left: 9px; padding-left: 18px; }
-      .agent-branch::before { left: -18px; width: 12px; }
-      .project-agents { display: none; }
-    }
-
-    /* «Никто не ждёт»: без этого спокойный борд выглядит ровно так же, как борд,
-       на который ты просто не с той стороны посмотрел - секция ожидания молча исчезала */
-    .calm {
-      display: flex; align-items: center; gap: 11px; margin-bottom: 6px;
-      padding: 11px 18px; border-radius: 12px;
-      background: linear-gradient(90deg, rgba(71,201,122,.09), rgba(71,201,122,.02));
-      border: 1px solid rgba(71,201,122,.22);
-      font-size: 13.5px; color: #8fdcaa;
-    }
-    .calm .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 9px var(--green); flex: none; }
-    .calm b { font-weight: 650; letter-spacing: .3px; }
-    .calm span { color: var(--faint); }
-
-    .empty { color: var(--dim); text-align: center; margin-top: 14vh; font-size: 15px; }
-    .empty small { display: block; margin-top: 9px; color: var(--faint); font-size: 12.5px; }
-
-    .toast {
-      position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%) translateY(12px);
-      background: rgba(33,45,64,.97); color: var(--text); border: 1px solid var(--border-hi);
-      padding: 11px 16px; border-radius: 10px; font-size: 13px; max-width: 90vw;
-      box-shadow: 0 12px 34px rgba(0,0,0,.5); opacity: 0; pointer-events: none; z-index: 50;
-      transition: opacity .2s, transform .2s;
-    }
-    .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-    @media (prefers-reduced-motion: reduce) {
-      *, ::before, ::after { animation: none !important; }
-    }
+/* борд живёт на широком мониторе, но при сужении необязательное уходит первым */
+@media (max-width: 1200px) {
+  .tbl { grid-template-columns: 200px minmax(0, 1fr) fit-content(360px) 60px max-content max-content 40px; }
+  .row .c-origin { display: none; }
+}
+@media (max-width: 900px) {
+  .tbl { grid-template-columns: 160px minmax(0, 1fr) 60px max-content max-content 40px; }
+  .row .c-act { display: none; }
+  .word small { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation: none !important; transition: none !important; }
+}

@@ -31,6 +31,30 @@ export function waitingText(timestamp, now = Date.now()) {
   return Math.floor(hours / 24) + ' дн';
 }
 
+/** Возраст сессии в строке: без слова «идёт», колонка и так называется возрастом. */
+export function ageText(timestamp, now = Date.now()) {
+  if (!timestamp) return '';
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (seconds < 60) return seconds + ' с';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return minutes + ' мин';
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return hours + ' ч ' + String(minutes % 60).padStart(2, '0') + ' мин';
+  return Math.floor(hours / 24) + ' дн';
+}
+
+/** Крупный таймер ожидания на красной карточке: м:сс, после часа ч:мм:сс. */
+export function timerText(since, now = Date.now()) {
+  if (!since) return '';
+  const total = Math.max(0, Math.floor((now - since) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const mm = String(minutes).padStart(2, '0');
+  const ss = String(seconds).padStart(2, '0');
+  return hours ? `${hours}:${mm}:${ss}` : `${minutes}:${ss}`;
+}
+
 export function escapeHtml(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, pruneStale, isHandledEvent, STATUS, WAIT_REASON } from '../state.js';
+import { applyEvent, pruneStale, isHandledEvent, shiftActivity, ACTIVITY_BARS, STATUS, WAIT_REASON } from '../state.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -104,6 +104,16 @@ test('служебные теги в промпте распознаются (sy
   }
 });
 
+test('промпт от другой сессии и с борда показывается без XML-обёртки', () => {
+  const peer = '<cross-session-message from="uds:/tmp/cc-socks/5377.sock" from-name="learningmy-d4" from-mode="prompting">\nЗакоммить handoff и обновить доку\n</cross-session-message>';
+  assert.equal(applyEvent({}, ev({ hook_event_name: 'UserPromptSubmit', prompt: peer }), NOW).s1.title, 'Закоммить handoff и обновить доку');
+  const channel = '<channel source="fleet" origin="board">продолжай, тесты зелёные</channel>';
+  assert.equal(applyEvent({}, ev({ hook_event_name: 'UserPromptSubmit', prompt: channel }), NOW).s1.title, 'продолжай, тесты зелёные');
+  const base = applyEvent({}, ev({ hook_event_name: 'UserPromptSubmit', prompt: 'живая задача' }), NOW);
+  const emptyWrap = applyEvent(base, ev({ hook_event_name: 'UserPromptSubmit', prompt: '<channel source="fleet"></channel>' }), NOW + 1);
+  assert.equal(emptyWrap.s1.title, 'живая задача', 'пустая обёртка не затирает задачу');
+});
+
 test('промпт, где служебный тег не в начале, считается обычным', () => {
   const state = applyEvent({}, ev({ hook_event_name: 'UserPromptSubmit', prompt: 'посмотри на <system-reminder> в коде' }), NOW);
   assert.equal(state.s1.title, 'посмотри на <system-reminder> в коде');
@@ -166,8 +176,54 @@ test('слишком длинный текст уведомления обрез
   assert.ok(state.s1.note.length <= 120, `note длиной ${state.s1.note.length} не влезает в карточку`);
 });
 
+test('PID процесса запоминается для любого агента, не только Codex', () => {
+  const state = applyEvent({}, ev({ hook_event_name: 'SessionStart', processPid: 4242 }), NOW);
+  assert.equal(state.s1.agent, 'claude');
+  assert.equal(state.s1.processPid, 4242);
+  assert.equal(applyEvent(state, ev({ hook_event_name: 'Stop', processPid: 1 }), NOW).s1.processPid, 4242, 'PID 1 и мусор не затирают прежний');
+});
+
+// --- искра активности ---------------------------------------------------------------
+// Десять столбиков, по одному на минуту. Буфер ограничен по построению: сколько бы событий
+// ни пришло, на карточке живут ровно ACTIVITY_BARS чисел.
+
+test('события считаются по минутам, буфер не растёт', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'SessionStart' }), NOW);
+  assert.equal(state.s1.activity.length, ACTIVITY_BARS);
+  assert.equal(state.s1.activity.at(-1), 1);
+  for (let i = 0; i < 5000; i += 1) {
+    state = applyEvent(state, ev({ hook_event_name: 'PreToolUse', tool_name: 'Read' }), NOW + i);
+  }
+  assert.equal(state.s1.activity.length, ACTIVITY_BARS, 'шторм событий не раздувает буфер');
+  assert.equal(state.s1.activity.at(-1), 5001, 'все события той же минуты в последнем столбике');
+});
+
+test('пауза сдвигает столбики влево, долгая пауза обнуляет их', () => {
+  let state = applyEvent({}, ev({ hook_event_name: 'SessionStart' }), NOW);
+  state = applyEvent(state, ev({ hook_event_name: 'Stop' }), NOW + 3 * 60_000);
+  assert.deepEqual(state.s1.activity.slice(-4), [1, 0, 0, 1]);
+  state = applyEvent(state, ev({ hook_event_name: 'Stop' }), NOW + 60 * 60_000);
+  assert.deepEqual(state.s1.activity, [0, 0, 0, 0, 0, 0, 0, 0, 0, 1], 'через час старая активность не видна');
+});
+
+test('shiftActivity терпит карточку без буфера и мусор в нём', () => {
+  assert.deepEqual(shiftActivity(undefined, undefined, 10), new Array(ACTIVITY_BARS).fill(0));
+  assert.deepEqual(shiftActivity([1, 'x', null, 2, 3, 4, 5, 6, 7, 8], 5, 6), [0, 0, 2, 3, 4, 5, 6, 7, 8, 0]);
+  assert.deepEqual(shiftActivity([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 5, 4), new Array(ACTIVITY_BARS).fill(0), 'часы назад не ходят');
+});
+
+test('toolTarget знает текущие имена инструментов Claude Code', () => {
+  const at = (tool_name, tool_input) =>
+    applyEvent({}, ev({ hook_event_name: 'PreToolUse', tool_name, tool_input }), NOW).s1.toolInfo;
+  assert.equal(at('Agent', { description: 'разведка', subagent_type: 'Explore' }), 'разведка');
+  assert.equal(at('Task', { description: 'старое имя' }), 'старое имя');
+  assert.equal(at('AskUserQuestion', { questions: [{ question: 'Какой порт?' }] }), 'Какой порт?');
+  assert.equal(at('Skill', { skill: 'bugfix', args: 'x' }), 'bugfix');
+  assert.equal(at('ToolSearch', { query: 'select:Monitor' }), 'select:Monitor');
+});
+
 test('SubagentStop не помечает работающую сессию как "закончил ход"', () => {
-  let state = applyEvent({}, ev({ hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: { description: 'разведка' } }), NOW);
+  let state = applyEvent({}, ev({ hook_event_name: 'PreToolUse', tool_name: 'Agent', tool_input: { description: 'разведка' } }), NOW);
   state = applyEvent(state, ev({ hook_event_name: 'SubagentStop' }), NOW + 1000);
   assert.equal(state.s1.status, STATUS.TOOL, 'сессия продолжает работать, субагент закончился не она');
   assert.notEqual(state.s1.reason, WAIT_REASON.FINISHED);

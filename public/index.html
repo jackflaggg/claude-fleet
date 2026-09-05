@@ -4,35 +4,31 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Fleet</title>
-  <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23090c11'/><circle cx='50' cy='50' r='9' fill='%2335d6c4'/><circle cx='50' cy='50' r='24' fill='none' stroke='%2335d6c4' stroke-width='4' opacity='.5'/><circle cx='50' cy='50' r='38' fill='none' stroke='%2335d6c4' stroke-width='3' opacity='.2'/></svg>" />
+  <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23090c11'/><circle cx='50' cy='50' r='9' fill='%233fd2c1'/><circle cx='50' cy='50' r='24' fill='none' stroke='%233fd2c1' stroke-width='4' opacity='.5'/><circle cx='50' cy='50' r='38' fill='none' stroke='%233fd2c1' stroke-width='3' opacity='.2'/></svg>" />
   <link rel="stylesheet" href="/assets/styles.css" />
 </head>
 <body>
-  <div class="bg" aria-hidden="true">
-    <span class="blob b1"></span>
-    <span class="blob b2"></span>
-    <span class="blob b3"></span>
-    <div class="grid"></div>
-    <div class="grain"></div>
-  </div>
+  <div class="bg" aria-hidden="true"></div>
 
   <header>
     <div class="hwrap">
       <span class="brand">
-        <span class="mark" id="mark"><span class="core"></span></span>
-        <span class="word">Fleet</span>
+        <span class="mark" id="mark"><i class="core"></i></span>
+        <span class="word">Fleet<small id="subtitle"></small></span>
       </span>
       <span class="live on" id="live"><span class="pulse"></span><span id="liveText">live</span></span>
-      <span class="win" id="win" hidden><span id="winLabel"></span><b id="winLeft"></b><span class="at" id="winAt"></span></span>
       <span class="unknown" id="unknown" hidden></span>
       <span class="counts" id="counts"></span>
       <button class="bell off" id="bell" type="button" aria-pressed="false" title="Уведомления выключены">
-        <svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true">
           <path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
                 d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>
           <line class="slash" x1="3" y1="3" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
         </svg>
       </button>
+    </div>
+    <div class="rail" id="rail" hidden aria-label="последние часы: старты сессий и окно лимита">
+      <div class="axis" id="axis"></div>
     </div>
   </header>
 
@@ -40,7 +36,7 @@
     <div id="board"></div>
     <div class="empty" id="empty">
       Тихо на палубе
-      <small>открой Claude Code или Codex в любом проекте — карточка появится здесь</small>
+      <small>открой Claude Code или Codex в любом проекте - карточка появится здесь</small>
     </div>
   </main>
 

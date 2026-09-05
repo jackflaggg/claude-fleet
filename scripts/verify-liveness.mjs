@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { isProcessAlive, pruneClosedCodex } from '../codex-liveness.js';
+import { isProcessAlive, pruneClosedSessions } from '../liveness.js';
 
 if (typeof global.gc !== 'function') {
   throw new Error('запусти с --expose-gc');
@@ -28,8 +28,8 @@ for (let phase = 0; phase < PHASES; phase += 1) {
     const i = phase * CYCLES_PER_PHASE + j;
     const id = `s${i}`;
     const sessions = { [id]: { agent: 'codex', processPid: i + 100 } };
-    const first = pruneClosedCodex(sessions, new Set(), missing, i * 2, 1);
-    const second = pruneClosedCodex(sessions, new Set(), first.missingSince, i * 2 + 1, 1);
+    const first = pruneClosedSessions(sessions, new Set(), missing, i * 2, 1);
+    const second = pruneClosedSessions(sessions, new Set(), first.missingSince, i * 2 + 1, 1);
     missing = second.missingSince;
   }
   global.gc();

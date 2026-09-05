@@ -1,9 +1,10 @@
 /**
- * Чистая часть проверки живых Codex-сессий.
+ * Чистая часть проверки живых сессий по PID.
  *
- * Codex не завершает сессию сразу при закрытии вкладки: SessionEnd может прийти через
- * 30 минут. Каждая IDE-вкладка живёт в отдельном процессе Codex; два промаха PID подряд
- * защищают от короткой гонки при переподключении клиента.
+ * SessionEnd приходит только на аккуратный выход: Claude молчит при закрытии окна терминала
+ * или kill, Codex шлёт его лишь через 30 минут после закрытия вкладки. PID процесса агента
+ * (из $PPID hook-команды) отражает реальное положение дел. Два промаха подряд защищают
+ * от короткой гонки при переподключении клиента.
  */
 
 /** Проверяет PID без сигнала процессу. Любая ошибка кроме ESRCH трактуется безопасно: жив. */
@@ -23,12 +24,12 @@ export function isProcessAlive(pid, probe = process.kill) {
  * @param {number} now
  * @param {number} graceMs
  */
-export function pruneClosedCodex(sessions, alivePids, missingSince, now, graceMs) {
+export function pruneClosedSessions(sessions, alivePids, missingSince, now, graceMs) {
   const nextMissing = new Map();
   let next = sessions;
 
   for (const [id, card] of Object.entries(sessions)) {
-    if (card?.agent !== 'codex' || !Number.isSafeInteger(card.processPid)) continue;
+    if (!Number.isSafeInteger(card?.processPid)) continue;
     if (alivePids.has(card.processPid)) continue;
 
     const firstMiss = missingSince.get(id);

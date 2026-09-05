@@ -26,3 +26,14 @@ export const IDLE_MS = 4 * 60 * 1000;
 export function termColor(terminal) {
   return TERM_COLORS[terminal] || 'var(--dim)';
 }
+
+/**
+ * Секция борда для карточки. Красное значит «нужен ты», а закончить ход это не просьба
+ * о помощи: сессия просто ждёт следующий промпт. Поэтому `finished` идёт в свою
+ * нейтральную секцию, а в «ждут тебя», в счётчик favicon и в уведомления попадают только
+ * разрешение, вопрос и сбой.
+ */
+export function sectionOf(card) {
+  if (card?.status !== 'waiting') return 'busy';
+  return card.reason === 'finished' ? 'done' : 'attn';
+}

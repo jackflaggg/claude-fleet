@@ -5,6 +5,7 @@
  *   GET  /stream         - SSE-поток текущего состояния всех сессий
  *   GET  /               - страница дашборда
  *   POST /focus/:id      - фокусит WebStorm на проект сессии (webstorm <cwd>)
+ *   /channel/*           - ответ с борда через канал Claude Code, только при FLEET_CHANNEL=1
  *
  * Состояние держим в памяти + лёгкий персист на диск, чтобы рестарт сервера не терял
  * живые карточки. При ребуте системы (сессии реально мертвы) состояние сбрасывается:
@@ -23,7 +24,7 @@ import { applyEvent, pruneStale, isHandledEvent } from './state.js';
 import { resolveFocus } from './focus.js';
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './guards.js';
 import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './usage.js';
-import { isProcessAlive, pruneClosedCodex } from './codex-liveness.js';
+import { isProcessAlive, pruneClosedSessions } from './liveness.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -45,14 +46,34 @@ const INDEX_FILE = join(PUBLIC_DIR, 'index.html');
 const STATIC_TYPES = new Map([
   ['.css', 'text/css; charset=utf-8'],
   ['.js', 'text/javascript; charset=utf-8'],
+  ['.woff2', 'font/woff2'],
 ]);
 const STATE_FILE = join(ROOT, '.fleet-state.json');
 const STALE_MS = (Number(process.env.FLEET_STALE_HOURS) || 6) * 60 * 60 * 1000;
 // Отдельный, куда более короткий порог для карточек без задачи и без инструмента: за ними
 // нет работы, которую можно потерять (см. isBlank в state.js).
 const BLANK_MS = (Number(process.env.FLEET_BLANK_MINUTES) || 15) * 60 * 1000;
-const CODEX_LIVENESS_INTERVAL_MS = 10 * 1000;
-const CODEX_LIVENESS_GRACE_MS = 10 * 1000;
+const LIVENESS_INTERVAL_MS = 10 * 1000;
+const LIVENESS_GRACE_MS = 10 * 1000;
+
+/**
+ * Ответ с борда идёт через канал Claude Code (research preview): отдельный MCP-процесс
+ * `channel/fleet-channel.js` на каждую сессию, который Claude Code сам запускает и который
+ * держит к нам SSE `/channel/commands`. Прототип за флагом: без него ни маршрутов, ни полей
+ * в снимке, борд выглядит и работает как раньше.
+ */
+const CHANNEL_ENABLED = process.env.FLEET_CHANNEL === '1';
+/** Каналов не больше, чем живых сессий; потолок страхует Map от роста при бесконечных реконнектах. */
+const MAX_CHANNELS = 64;
+/** Тело команды с борда: текст ответа, а не результат инструмента. */
+const MAX_CHANNEL_BODY = 16 * 1024;
+const MAX_CHANNEL_TEXT = 4000;
+/**
+ * Запрос разрешения, на который карточка так и не встала в ожидание, считаем закрытым
+ * в терминале. Пауза нужна из-за порядка событий: уведомление канала и hook-событие
+ * идут разными путями, и любое из них может прийти первым.
+ */
+const PERMISSION_SETTLE_MS = 3000;
 
 /**
  * Окно лимита Claude. Папка транскриптов и длина окна - в .env: путь машинно-зависимый,
@@ -85,8 +106,12 @@ const USAGE_MAX_TAIL = 24 * 1024 * 1024;
  */
 const READ_BUFFER = Buffer.allocUnsafe(1024 * 1024);
 
-/** Событие крупнее этого отбрасываем целиком: JSON нельзя распарсить по кусочку. */
-const MAX_BODY = 1024 * 1024;
+/**
+ * Событие крупнее этого отбрасываем целиком: JSON нельзя распарсить по кусочку. Четыре
+ * мегабайта, а не один: в fleet.log 03.09 два PostToolUse по 1.0 и 1.3 МБ (tool_response
+ * с большим файлом) были отброшены, и карточка залипла на прошлом статусе до следующего тула.
+ */
+const MAX_BODY = 4 * 1024 * 1024;
 /** А это уже не наш хук, а чей-то поток без конца - рвём соединение, не дочитывая. */
 const HARD_BODY_LIMIT = 32 * 1024 * 1024;
 
@@ -137,29 +162,30 @@ function loadState() {
 let sessions = loadState();
 const sseClients = new Set();
 
-let closedCodexSince = new Map();
+let closedSince = new Map();
 
 /**
- * В отличие от SessionEnd (до 30 минут после закрытия вкладки), PID отражает реальную
- * подключённую Codex-сессию. signal 0 ничего не посылает процессу, только проверяет его
- * существование. Два последовательных промаха не дают переподключению мигать карточкой.
+ * В отличие от SessionEnd (у Claude его нет при закрытии окна, у Codex он приходит через
+ * 30 минут), PID отражает реальную живую сессию. signal 0 ничего не посылает процессу,
+ * только проверяет его существование. Два последовательных промаха не дают
+ * переподключению мигать карточкой.
  */
-function scanCodexLiveness() {
+function scanLiveness() {
   const pids = [...new Set(Object.values(sessions)
-    .filter((card) => card?.agent === 'codex' && Number.isSafeInteger(card.processPid))
+    .filter((card) => Number.isSafeInteger(card?.processPid))
     .map((card) => card.processPid))];
   const alivePids = new Set();
   for (const pid of pids) {
     if (isProcessAlive(pid)) alivePids.add(pid);
   }
-  const result = pruneClosedCodex(
+  const result = pruneClosedSessions(
     sessions,
     alivePids,
-    closedCodexSince,
+    closedSince,
     Date.now(),
-    CODEX_LIVENESS_GRACE_MS,
+    LIVENESS_GRACE_MS,
   );
-  closedCodexSince = result.missingSince;
+  closedSince = result.missingSince;
   if (result.sessions !== sessions) {
     sessions = result.sessions;
     broadcast();
@@ -186,7 +212,177 @@ function persist() {
 }
 
 function snapshot() {
-  return Object.values(sessions).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  const cards = Object.values(sessions).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  return CHANNEL_ENABLED ? cards.map(withChannel) : cards;
+}
+
+/**
+ * Канал ответа: pid процесса агента -> открытый SSE-ответ процессу канала. Ключ тот же,
+ * что у карточки (`processPid`), так карточка и канал находят друг друга без общего id:
+ * процесс канала знает только своего родителя (`process.ppid`), а hook-команда - своего.
+ * В состоянии карточек этого нет намеренно: канал живёт ровно столько, сколько соединение.
+ */
+const channels = new Map();
+/** pid -> открытый запрос разрешения из Claude Code, пока борд или терминал не ответили. */
+const pendingPermissions = new Map();
+
+function withChannel(card) {
+  const pid = card.processPid;
+  const pending = pendingPermissions.get(pid);
+  return {
+    ...card,
+    channel: channels.has(pid),
+    permission: pending
+      ? { requestId: pending.requestId, toolName: pending.toolName, description: pending.description, inputPreview: pending.inputPreview }
+      : null,
+  };
+}
+
+function sendChannelCommand(pid, command) {
+  const channel = channels.get(pid);
+  if (!channel) return false;
+  try {
+    channel.res.write(`data: ${JSON.stringify(command)}\n\n`);
+    return true;
+  } catch {
+    channels.delete(pid);
+    return false;
+  }
+}
+
+/** Процесс канала держит этот поток открытым всю жизнь сессии; команды борда идут по нему. */
+function handleChannelCommands(req, res, url) {
+  const pid = Number(url.searchParams.get('pid'));
+  if (!Number.isSafeInteger(pid) || pid <= 1) {
+    res.writeHead(400).end('нужен pid');
+    return;
+  }
+  if (!channels.has(pid) && channels.size >= MAX_CHANNELS) {
+    res.writeHead(503).end('слишком много каналов');
+    return;
+  }
+  // Переподключение того же процесса: прежний поток закрываем, иначе команды уйдут в пустоту.
+  const previous = channels.get(pid);
+  if (previous) {
+    try { previous.res.end(); } catch { /* уже закрыт */ }
+  }
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  res.write(': fleet channel\n\n');
+  channels.set(pid, { res, since: Date.now() });
+  const heartbeat = setInterval(() => {
+    try { res.write(': ping\n\n'); } catch { /* уборку сделает close */ }
+  }, 25_000);
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    if (channels.get(pid)?.res !== res) return;
+    channels.delete(pid);
+    pendingPermissions.delete(pid);
+    broadcast();
+  };
+  req.on('close', cleanup);
+  res.on('error', cleanup);
+  log(`канал подключён: pid ${pid}`);
+  broadcast();
+}
+
+const REQUEST_ID_RE = /^[a-km-z]{5}$/;
+
+/** Claude Code открыл диалог разрешения и отдал его каналу; тот пересылает сюда. */
+async function handlePermissionRequest(req, res) {
+  let body;
+  try {
+    body = JSON.parse(await readBody(req, MAX_CHANNEL_BODY));
+  } catch {
+    res.writeHead(400).end('плохое тело');
+    return;
+  }
+  const pid = Number(body?.pid);
+  const requestId = String(body?.request_id ?? '');
+  if (!channels.has(pid) || !REQUEST_ID_RE.test(requestId)) {
+    res.writeHead(409).end('канал не подключён или плохой request_id');
+    return;
+  }
+  pendingPermissions.set(pid, {
+    requestId,
+    toolName: String(body.tool_name ?? '').slice(0, 80),
+    description: String(body.description ?? '').slice(0, 400),
+    inputPreview: String(body.input_preview ?? '').slice(0, 1200),
+    at: Date.now(),
+  });
+  res.writeHead(204).end();
+  broadcast();
+}
+
+/** Кнопка «Разрешить»/«Отказать» на карточке. */
+async function handlePermissionVerdict(req, res, id) {
+  const card = sessions[id];
+  const pending = card && pendingPermissions.get(card.processPid);
+  if (!pending) {
+    res.writeHead(409).end('запрос разрешения уже закрыт');
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(await readBody(req, MAX_CHANNEL_BODY));
+  } catch {
+    res.writeHead(400).end('плохое тело');
+    return;
+  }
+  const behavior = body?.behavior === 'allow' ? 'allow' : body?.behavior === 'deny' ? 'deny' : null;
+  if (!behavior) {
+    res.writeHead(400).end('behavior: allow | deny');
+    return;
+  }
+  const sent = sendChannelCommand(card.processPid, { type: 'permission', request_id: pending.requestId, behavior });
+  pendingPermissions.delete(card.processPid);
+  res.writeHead(sent ? 204 : 409).end();
+  broadcast();
+}
+
+/** Строка ответа на карточке: текст уходит в сессию как следующий ход. */
+async function handleChannelMessage(req, res, id) {
+  const card = sessions[id];
+  if (!card || !channels.has(card.processPid)) {
+    res.writeHead(409).end('у сессии нет канала');
+    return;
+  }
+  let body;
+  try {
+    body = JSON.parse(await readBody(req, MAX_CHANNEL_BODY));
+  } catch {
+    res.writeHead(400).end('плохое тело');
+    return;
+  }
+  const text = typeof body?.text === 'string' ? body.text.trim().slice(0, MAX_CHANNEL_TEXT) : '';
+  if (!text) {
+    res.writeHead(400).end('пустой текст');
+    return;
+  }
+  const sent = sendChannelCommand(card.processPid, { type: 'message', text });
+  res.writeHead(sent ? 204 : 409).end();
+}
+
+/**
+ * Запрос разрешения, который закрыли в терминале, нам никто не сообщит: Claude Code шлёт
+ * каналу только открытие. Признак - карточка не стоит (или уже не стоит) в ожидании
+ * разрешения, с паузой на разный порядок прихода уведомления и hook-события.
+ */
+function dropSettledPermissions(now) {
+  if (!pendingPermissions.size) return;
+  const byPid = new Map();
+  for (const card of Object.values(sessions)) {
+    if (Number.isSafeInteger(card?.processPid)) byPid.set(card.processPid, card);
+  }
+  for (const [pid, pending] of pendingPermissions) {
+    if (now - pending.at < PERMISSION_SETTLE_MS) continue;
+    const card = byPid.get(pid);
+    const asking = card?.status === 'waiting' && card.reason === 'permission';
+    if (!asking) pendingPermissions.delete(pid);
+  }
 }
 
 /**
@@ -233,6 +429,7 @@ function handleStats(res) {
     cpuSec: +((cpu.user + cpu.system) / 1e6).toFixed(1),
     sessions: Object.keys(sessions).length,
     boards: sseClients.size,
+    channels: channels.size,
     usageFiles: transcriptOffsets.size,
     events: stats.events,
     totalMb: +(stats.bytes / 1048576).toFixed(2),
@@ -392,7 +589,7 @@ function broadcast() {
   }
 }
 
-async function readBody(req) {
+async function readBody(req, limit = MAX_BODY) {
   const chunks = [];
   let size = 0;
   let overflow = false;
@@ -401,7 +598,7 @@ async function readBody(req) {
     // Событие с содержимым большого файла в tool_response может весить сотни КБ.
     // Сверх лимита в память не копим, но поток дочитываем: оборвать его - значит
     // разрушить сокет, и отправитель не получит внятный ответ, а просто увидит обрыв.
-    if (size > MAX_BODY) {
+    if (size > limit) {
       overflow = true;
       if (size > HARD_BODY_LIMIT) {
         req.destroy();
@@ -411,7 +608,7 @@ async function readBody(req) {
     }
     chunks.push(chunk);
   }
-  if (overflow) throw new Error(`тело события ${size} байт при лимите ${MAX_BODY}`);
+  if (overflow) throw new Error(`тело события ${size} байт при лимите ${limit}`);
   return Buffer.concat(chunks).toString('utf8');
 }
 
@@ -460,7 +657,9 @@ async function handleEvent(req, res) {
     if (!isHandledEvent(event.hook_event_name)) noteUnknownEvent(event.hook_event_name);
   }
 
-  sessions = applyEvent(sessions, event, Date.now());
+  const now = Date.now();
+  sessions = applyEvent(sessions, event, now);
+  if (CHANNEL_ENABLED) dropSettledPermissions(now);
   broadcast();
   persist();
 }
@@ -469,7 +668,7 @@ function handleStream(req, res) {
   // Борд открыли после паузы: пока его никто не смотрел, транскрипты не читались,
   // и окно лимита успело уехать. Пересчитываем сразу, не дожидаясь тика опроса.
   if (sseClients.size === 0) scanUsage();
-  if (sseClients.size === 0) scanCodexLiveness();
+  if (sseClients.size === 0) scanLiveness();
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
@@ -515,7 +714,11 @@ function handleFocus(res, id) {
     return;
   }
   try {
-    spawn(target.cmd, target.args, { stdio: 'ignore', detached: true }).unref();
+    const child = spawn(target.cmd, target.args, { stdio: 'ignore', detached: true });
+    // spawn бросает синхронно не всё: ENOENT (лаунчера нет по пути из .env) приходит
+    // событием 'error' и без обработчика роняет весь процесс борда
+    child.on('error', (error) => log(`фокус не удался (${target.cmd}): ${error.message}`));
+    child.unref();
     res.writeHead(200).end('ok');
   } catch (error) {
     res.writeHead(500).end(String(error));
@@ -567,9 +770,12 @@ async function handlePublicAsset(res, pathname) {
   }
   try {
     const content = await readFile(file);
+    // Шрифты не меняются, а весят треть мегабайта: их браузер держит в кэше, остальное
+    // перепроверяет на каждом обновлении вкладки.
+    const cache = extname(file) === '.woff2' ? 'public, max-age=31536000, immutable' : 'no-cache';
     res.writeHead(200, {
       'Content-Type': contentType,
-      'Cache-Control': 'no-cache',
+      'Cache-Control': cache,
     }).end(content);
   } catch {
     res.writeHead(404).end('not found');
@@ -605,6 +811,24 @@ const server = http.createServer((req, res) => {
     return handleDelete(res, id);
   }
 
+  if (CHANNEL_ENABLED && url.pathname.startsWith('/channel/')) {
+    if (req.method === 'GET' && url.pathname === '/channel/commands') return handleChannelCommands(req, res, url);
+    if (req.method === 'POST' && url.pathname === '/channel/permission-request') {
+      handlePermissionRequest(req, res).catch(() => {});
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/channel/permission/')) {
+      const id = decodeURIComponent(url.pathname.slice('/channel/permission/'.length));
+      handlePermissionVerdict(req, res, id).catch(() => {});
+      return;
+    }
+    if (req.method === 'POST' && url.pathname.startsWith('/channel/message/')) {
+      const id = decodeURIComponent(url.pathname.slice('/channel/message/'.length));
+      handleChannelMessage(req, res, id).catch(() => {});
+      return;
+    }
+  }
+
   if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
     return handleIndex(res);
   }
@@ -631,10 +855,10 @@ setInterval(() => {
   }
 }, PRUNE_INTERVAL_MS).unref();
 
-// Закрытые вкладки Codex убираем быстро; без открытого борда даже дешёвые проверки не нужны.
+// Закрытые сессии убираем быстро; без открытого борда даже дешёвые проверки не нужны.
 setInterval(() => {
-  if (sseClients.size > 0) scanCodexLiveness();
-}, CODEX_LIVENESS_INTERVAL_MS).unref();
+  if (sseClients.size > 0) scanLiveness();
+}, LIVENESS_INTERVAL_MS).unref();
 
 /**
  * Пересчёт окна лимита - только пока борд кто-то смотрит. Без открытых вкладок читать

@@ -22,3 +22,20 @@ export function focusSession(sessionId) {
 export function dropSession(sessionId) {
   return fetch('/session/' + encodeURIComponent(sessionId), { method: 'DELETE' });
 }
+
+function postJson(path, body) {
+  return fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Ответ с борда идёт через канал Claude Code; маршруты живут только при FLEET_CHANNEL=1. */
+export function sendPermission(sessionId, behavior) {
+  return postJson('/channel/permission/' + encodeURIComponent(sessionId), { behavior });
+}
+
+export function sendReply(sessionId, text) {
+  return postJson('/channel/message/' + encodeURIComponent(sessionId), { text });
+}
