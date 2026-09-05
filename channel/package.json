@@ -1,0 +1,16 @@
+{
+  "name": "fleet-channel",
+  "version": "0.1.0",
+  "description": "Канал Claude Code для ответа с борда claude-fleet (research preview каналов)",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "main": "fleet-channel.js",
+  "scripts": {
+    "start": "node fleet-channel.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.0"
+  }
+}
