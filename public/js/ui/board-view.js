@@ -1,5 +1,6 @@
-import { IDLE_MS, STATUS_META, WAIT_BADGE, sectionOf, termColor } from '../board-config.js';
+import { AGENT_LABEL, AGENT_ORDER, IDLE_MS, STATUS_META, WAIT_BADGE, termColor } from '../board-config.js';
 import { sparkBars } from '../lib/activity.js';
+import { ACTIVE_STATUSES, AGENT, SECTION, STATUS, WAIT_REASON, agentOf, sectionOf } from '../lib/domain.js';
 import {
   ageText,
   escapeHtml,
@@ -10,8 +11,6 @@ import {
 } from '../lib/format.js';
 import { updateFavicon } from './favicon.js';
 
-const AGENTS = { claude: 'Claude', codex: 'Codex' };
-const AGENT_ORDER = ['claude', 'codex'];
 const SPARK_BARS = 10;
 /* искра гаснет, когда последние две минуты пусты: так «затухание» видно раньше бейджа */
 const QUIET_MINUTES = 2;
@@ -23,8 +22,6 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
   let lastSig = null;
   let lastLayout = '';
   const slots = new Map();
-
-  function agentOf(c) { return c.agent === 'codex' ? 'codex' : 'claude'; }
 
   function avatarHtml(name) {
     const mark = projectMark(name);
@@ -38,7 +35,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     const terminal = c.terminal
       ? `<span class="term" style="--tc:${termColor(c.terminal)}">${escapeHtml(c.terminal)}</span>`
       : '';
-    return `<span class="origin ${extraClass}"><span class="agent">${AGENTS[agentOf(c)]}</span>${terminal}</span>`;
+    return `<span class="origin ${extraClass}"><span class="agent">${AGENT_LABEL[agentOf(c)]}</span>${terminal}</span>`;
   }
 
   /* worktree стоит в группе родительского проекта, поэтому имя копии надо назвать в самой
@@ -65,8 +62,8 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
   }
 
   function badgeFor(c) {
-    if (c.status === 'waiting') {
-      return { cls: sectionOf(c) === 'done' ? 'done' : 'waiting', label: WAIT_BADGE[c.reason] || 'ждёт тебя' };
+    if (c.status === STATUS.WAITING) {
+      return { cls: sectionOf(c) === SECTION.DONE ? 'done' : 'waiting', label: WAIT_BADGE[c.reason] || 'ждёт тебя' };
     }
     return STATUS_META[c.status] || STATUS_META.ready;
   }
@@ -81,7 +78,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
         + '<button class="act no" type="button" data-verdict="deny">Отказать</button>'
         + '<span class="needs">через канал fleet</span></span>';
     }
-    if (c.reason === 'permission') return '';
+    if (c.reason === WAIT_REASON.PERMISSION) return '';
     return '<form class="reply"><input type="text" placeholder="Ответить сессии…" aria-label="ответ сессии" maxlength="4000">'
       + '<button class="act" type="submit">Отправить</button><span class="needs">через канал fleet</span></form>';
   }
@@ -96,8 +93,8 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
      та же форма, но без красного и без дыхания: она не зовёт, а просто стоит без промпта. */
   function cardHtml(c) {
     const b = badgeFor(c);
-    const done = sectionOf(c) === 'done';
-    const asking = c.reason === 'permission' || c.reason === 'question';
+    const done = sectionOf(c) === SECTION.DONE;
+    const asking = c.reason === WAIT_REASON.PERMISSION || c.reason === WAIT_REASON.QUESTION;
     const ask = c.note || c.permission?.description || '';
     const askHtml = ask ? `<div class="ask">${escapeHtml(ask)}</div>` : '';
     const taskHtml = c.title ? `<div class="task">${escapeHtml(c.title)}</div>` : '';
@@ -120,7 +117,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     const bars = '<i></i>'.repeat(SPARK_BARS);
     return `<div class="c-proj">${avatarHtml(c.project)}<span class="proj">${escapeHtml(c.project)}</span></div>
       <div class="c-task">${wtreeHtml(c)}${task}</div>
-      <div class="c-act">${c.status !== 'ready' ? toolHtml(c) : ''}<span class="idle">нет активности <span class="idle-t"></span></span></div>
+      <div class="c-act">${c.status !== STATUS.READY ? toolHtml(c) : ''}<span class="idle-note">нет активности <span class="idle-t"></span></span></div>
       <span class="spark">${bars}</span>
       <span class="badge ${b.cls}">${b.label}</span>
       <span class="age" data-created="${c.createdAt || 0}">${ageText(c.createdAt)}</span>
@@ -145,7 +142,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
       el.setAttribute('role', 'button');
       el.tabIndex = 0;
       el.dataset.id = c.sessionId;
-      el.title = agentOf(c) === 'codex'
+      el.title = agentOf(c) === AGENT.CODEX
         ? 'открыть проект сессии Codex'
         : 'перейти к сессии Claude (WebStorm или её терминал)';
       entry = { el, sig: null, shape };
@@ -154,10 +151,11 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     const nextSig = cardSig(c);
     if (nextSig !== entry.sig) {
       entry.sig = nextSig;
-      // классы протухания и продолжения группы ставятся снаружи, при смене статуса их сохраняем
-      const keep = ['stale', 'cont'].filter((name) => entry.el.classList.contains(name)).join(' ');
-      const done = shape === 'card' && sectionOf(c) === 'done' ? 'done' : '';
+      // классы простоя (idle) и продолжения группы ставятся снаружи, при смене статуса их сохраняем
+      const keep = ['idle', 'cont'].filter((name) => entry.el.classList.contains(name)).join(' ');
+      const done = shape === 'card' && sectionOf(c) === SECTION.DONE ? 'done' : '';
       entry.el.className = `unit ${shape} ${done} s-${c.status} a-${agentOf(c)} ${keep}`;
+      entry.el.dataset.status = c.status;
       entry.el.innerHTML = shape === 'row' ? rowHtml(c) : cardHtml(c);
     }
     syncLive(entry.el, c);
@@ -199,9 +197,9 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     const list = data.sessions || [];
     // три секции: красное «ждут тебя» (разрешение, вопрос, сбой), нейтральное «закончили
     // ход» (Stop: сессия стоит без промпта, но помощи не просит) и строки «в работе»
-    const waiting = list.filter((c) => sectionOf(c) === 'attn').sort(waitOrder);
-    const done = list.filter((c) => sectionOf(c) === 'done').sort(waitOrder);
-    const busy = list.filter((c) => sectionOf(c) === 'busy').sort(rowOrder);
+    const waiting = list.filter((c) => sectionOf(c) === SECTION.ATTN).sort(waitOrder);
+    const done = list.filter((c) => sectionOf(c) === SECTION.DONE).sort(waitOrder);
+    const busy = list.filter((c) => sectionOf(c) === SECTION.BUSY).sort(rowOrder);
 
     // скелет перестраиваем, только если изменился состав секций, а не при каждом событии:
     // порядок внутри секции задаёт сам append (существующий элемент переезжает, не создаётся)
@@ -251,7 +249,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     forgetGoneCards(list);
     empty.hidden = list.length > 0;
 
-    const claudeCount = list.filter((c) => agentOf(c) === 'claude').length;
+    const claudeCount = list.filter((c) => agentOf(c) === AGENT.CLAUDE).length;
     const codexCount = list.length - claudeCount;
     const split = claudeCount && codexCount ? ` · Claude ${claudeCount} · Codex ${codexCount}` : '';
     setText(document.getElementById('subtitle'), list.length
@@ -317,7 +315,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     spark.title = `событий за 10 минут: ${total}`;
   }
 
-  // раз в секунду двигаем время «на месте» (без ре-рендера) и подсвечиваем протухшие карточки
+  // раз в секунду двигаем время «на месте» (без ре-рендера) и подсвечиваем простаивающие строки
   function tickTimes() {
     const now = Date.now();
     for (const el of board.querySelectorAll('.unit')) {
@@ -326,11 +324,11 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
       const age = el.querySelector('.age');
       if (age) setText(age, ageText(Number(age.dataset.created), now));
       // «нет активности» только для активных статусов - waiting/ready законно ждут человека
-      const busy = /\bs-(thinking|tool|working|error|compacting)\b/.test(el.className);
+      const busy = ACTIVE_STATUSES.has(el.dataset.status);
       const ts = Number(el.dataset.ts) || 0;
-      const stale = busy && ts > 0 && now - ts > IDLE_MS;
-      el.classList.toggle('stale', stale);
-      if (stale) setText(el.querySelector('.idle-t'), waitingText(ts, now));
+      const idle = busy && ts > 0 && now - ts > IDLE_MS;
+      el.classList.toggle('idle', idle);
+      if (idle) setText(el.querySelector('.idle-t'), waitingText(ts, now));
       paintSpark(el, now);
     }
   }

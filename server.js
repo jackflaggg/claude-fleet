@@ -25,6 +25,7 @@ import { resolveFocus } from './focus.js';
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './guards.js';
 import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './usage.js';
 import { isProcessAlive, pruneClosedSessions } from './liveness.js';
+import { AGENT, isAskingPermission } from './public/js/lib/domain.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -436,9 +437,7 @@ function dropSettledPermissions(now) {
   }
   for (const [pid, pending] of pendingPermissions) {
     if (now - pending.at < PERMISSION_SETTLE_MS) continue;
-    const card = byPid.get(pid);
-    const asking = card?.status === 'waiting' && card.reason === 'permission';
-    if (!asking) pendingPermissions.delete(pid);
+    if (!isAskingPermission(byPid.get(pid))) pendingPermissions.delete(pid);
   }
 }
 
@@ -706,7 +705,7 @@ async function handleEvent(req, res) {
   // Тело hook-события у Claude и Codex почти одинаковое. Источник задаёт наш репортёр
   // отдельным заголовком, чтобы не переписывать/не буферизовать JSON на горячем пути.
   const agentHeader = req.headers['x-fleet-agent'];
-  if (agentHeader === 'codex') event.agent = 'codex';
+  if (agentHeader === AGENT.CODEX) event.agent = AGENT.CODEX;
   const pidHeader = Number(req.headers['x-fleet-pid']);
   if (Number.isSafeInteger(pidHeader) && pidHeader > 1) event.processPid = pidHeader;
 

@@ -1,4 +1,5 @@
-import { WAIT_BADGE } from '../board-config.js';
+import { AGENT_LABEL, WAIT_BADGE } from '../board-config.js';
+import { agentOf } from '../lib/domain.js';
 
 const NOTIFY_KEY = 'fleet-notify';
 
@@ -63,9 +64,8 @@ export function createNotifications({ onFocus, toast }) {
     if (!notifyOn || !fresh.length || !('Notification' in window) || Notification.permission !== 'granted') return;
 
     const one = fresh.length === 1 ? fresh[0] : null;
-    const agent = one?.agent === 'codex' ? 'Codex' : 'Claude';
     const title = one
-      ? `${one.project} · ${agent} ${WAIT_BADGE[one.reason] || 'ждёт тебя'}`
+      ? `${one.project} · ${AGENT_LABEL[agentOf(one)]} ${WAIT_BADGE[one.reason] || 'ждёт тебя'}`
       : `${fresh.length} сессии ждут тебя`;
     const body = one
       ? (one.note || (one.tool ? `${one.tool}${one.toolInfo ? ' · ' + one.toolInfo : ''}` : one.title || ''))

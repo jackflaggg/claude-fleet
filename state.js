@@ -7,24 +7,7 @@
  */
 
 import { bumpActivity } from './public/js/lib/activity.js';
-
-export const STATUS = {
-  READY: 'ready',
-  THINKING: 'thinking',
-  TOOL: 'tool',
-  WORKING: 'working',
-  ERROR: 'error',
-  WAITING: 'waiting',
-  COMPACTING: 'compacting',
-};
-
-/** Причина, по которой сессия попала в "ждут тебя" (только для STATUS.WAITING). */
-export const WAIT_REASON = {
-  FINISHED: 'finished', // Claude закончил ход, нужен следующий шаг
-  PERMISSION: 'permission', // Claude просит разрешение на инструмент
-  QUESTION: 'question', // Claude ждёт твой ответ на вопрос (AskUserQuestion / план / простой)
-  FAILED: 'failed', // ход оборвался ошибкой API (StopFailure) - сессия встала сама
-};
+import { AGENT, STATUS, WAIT_REASON } from './public/js/lib/domain.js';
 
 /**
  * События хука, которые борд понимает. Схема событий Claude Code не наша и может измениться
@@ -273,10 +256,10 @@ export function applyEvent(sessions, event, now) {
   const sourceId = event?.session_id;
   const eventName = event?.hook_event_name;
   if (!sourceId || !eventName) return next;
-  const agent = event?.agent === 'codex' ? 'codex' : 'claude';
+  const agent = event?.agent === AGENT.CODEX ? AGENT.CODEX : AGENT.CLAUDE;
   // Пространства id разделены явно: схема обоих агентов использует session_id, и хотя UUID
   // почти наверняка не столкнутся, карточка и DELETE/focus не должны зависеть от «почти».
-  const id = agent === 'codex' ? `codex:${sourceId}` : sourceId;
+  const id = agent === AGENT.CODEX ? `${AGENT.CODEX}:${sourceId}` : sourceId;
 
   if (eventName === 'SessionEnd') {
     delete next[id];
@@ -456,11 +439,6 @@ export function applyEvent(sessions, event, now) {
   return next;
 }
 
-/** Карточка в состоянии STATUS.WAITING считается требующей внимания. */
-export function isWaiting(card) {
-  return card?.status === STATUS.WAITING;
-}
-
 /**
  * Карточка, которая за всю жизнь не показала ни задачи, ни инструмента. Так выглядит не
  * работа, а мусор: фоновый агент со своим session_id, остаток от перехода в worktree,
@@ -472,8 +450,9 @@ function isBlank(card) {
 }
 
 /**
- * Возвращает набор сессий без протухших - тех, что не обновлялись дольше staleMs
- * (пустые - дольше blankMs, он короче).
+ * Возвращает набор сессий без протухших (stale) - тех, что не обновлялись дольше staleMs
+ * (пустые - дольше blankMs, он короче). Это часы и удаление; подсветка «нет активности»
+ * через минуты на борде зовётся idle и живёт на фронте, слова не смешивать.
  * Нужна, потому что карточка удаляется по SessionEnd, а оно приходит только на аккуратный
  * выход (/exit). При закрытии окна терминала, kill или крэше события нет, и зомби-карточка
  * иначе висела бы на борде вечно. Чистая функция (время и пороги - снаружи), вызывается

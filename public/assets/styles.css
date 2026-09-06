@@ -268,12 +268,14 @@ main { max-width: var(--maxw); margin: 0 auto; padding: 4px 28px 60px; }
 .row .badge { justify-self: start; }
 .row .c-end { padding-right: 8px; display: grid; place-items: center; }
 /* «протухание»: активная строка без событий дольше порога тускнеет, вместо тула - подпись */
-.idle { display: none; align-items: center; gap: 6px; font-size: 12.5px; color: var(--amber); white-space: nowrap; }
-.idle::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-.row.stale { opacity: .55; }
-.row.stale::before { background: var(--faint); }
-.row.stale .tool { display: none; }
-.row.stale .idle { display: inline-flex; }
+.idle-note { display: none; align-items: center; gap: 6px; font-size: 12.5px; color: var(--amber); white-space: nowrap; }
+.idle-note::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+/* idle: активная строка без событий дольше IDLE_MS (минуты, подсветка). Не путать со stale
+   на сервере: там часы и удаление карточки */
+.row.idle { opacity: .55; }
+.row.idle::before { background: var(--faint); }
+.row.idle .tool { display: none; }
+.row.idle .idle-note { display: inline-flex; }
 
 /* «Никто не ждёт»: без этого спокойный борд выглядит так же, как борд, на который смотрят не туда */
 .calm { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: var(--r-card);

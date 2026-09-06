@@ -1,25 +1,4 @@
-export function relativeTime(timestamp, now = Date.now()) {
-  if (!timestamp) return '';
-  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (seconds < 60) return seconds + ' сек назад';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return minutes + ' мин назад';
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return hours + ' ч назад';
-  return Math.floor(hours / 24) + ' дн назад';
-}
-
-export function durationText(timestamp, now = Date.now()) {
-  if (!timestamp) return '';
-  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (seconds < 60) return 'идёт ' + seconds + ' с';
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return 'идёт ' + minutes + ' мин';
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return 'идёт ' + hours + ' ч';
-  return 'идёт ' + Math.floor(hours / 24) + ' дн';
-}
-
+/** Подпись «нет активности N»: сколько строка стоит без событий. */
 export function waitingText(timestamp, now = Date.now()) {
   if (!timestamp) return '';
   const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));

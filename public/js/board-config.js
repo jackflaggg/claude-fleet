@@ -1,18 +1,30 @@
+import { AGENT, STATUS, WAIT_REASON } from './lib/domain.js';
+
+/* Подписи и классы бейджа для строк «в работе»; ждущие карточки берут подпись из WAIT_BADGE. */
 export const STATUS_META = {
-  ready:      { cls: 'ready', label: 'готов' },
-  thinking:   { cls: 'busy',  label: 'думает' },
-  tool:       { cls: 'busy',  label: 'работает' },
-  working:    { cls: 'busy',  label: 'работает' },
-  error:      { cls: 'error', label: 'ошибка' },
-  compacting: { cls: 'busy',  label: 'сжимает контекст' },
+  [STATUS.READY]:      { cls: 'ready', label: 'готов' },
+  [STATUS.THINKING]:   { cls: 'busy',  label: 'думает' },
+  [STATUS.TOOL]:       { cls: 'busy',  label: 'работает' },
+  [STATUS.WORKING]:    { cls: 'busy',  label: 'работает' },
+  [STATUS.ERROR]:      { cls: 'error', label: 'ошибка' },
+  [STATUS.COMPACTING]: { cls: 'busy',  label: 'сжимает контекст' },
 };
 
 export const WAIT_BADGE = {
-  finished: 'закончил ход',
-  permission: 'ждёт разрешения',
-  question: 'нужен ответ',
-  failed: 'сбой API',
+  [WAIT_REASON.FINISHED]: 'закончил ход',
+  [WAIT_REASON.PERMISSION]: 'ждёт разрешения',
+  [WAIT_REASON.QUESTION]: 'нужен ответ',
+  [WAIT_REASON.FAILED]: 'сбой API',
 };
+
+/* Агент подписан монохромно: своего цвета у него нет, цвет значит либо проект, либо «нужен ты». */
+export const AGENT_LABEL = {
+  [AGENT.CLAUDE]: 'Claude',
+  [AGENT.CODEX]: 'Codex',
+};
+
+/* Порядок строк внутри проекта. */
+export const AGENT_ORDER = [AGENT.CLAUDE, AGENT.CODEX];
 
 const TERM_COLORS = {
   WebStorm: '#3fd0c9', IntelliJ: '#ff6f8e', PyCharm: '#f7d64c', PhpStorm: '#b06bff',
@@ -21,19 +33,10 @@ const TERM_COLORS = {
   Warp: '#4d9dff', kitty: '#f7a94c', WezTerm: '#5be3a0', Ghostty: '#c299ff',
 };
 
+/* Через сколько активная строка без событий тускнеет в «нет активности» (idle). Это подсказка
+   на фронте; удаление протухших (stale) через часы делает сервер, pruneStale в state.js. */
 export const IDLE_MS = 4 * 60 * 1000;
 
 export function termColor(terminal) {
   return TERM_COLORS[terminal] || 'var(--dim)';
-}
-
-/**
- * Секция борда для карточки. Красное значит «нужен ты», а закончить ход это не просьба
- * о помощи: сессия просто ждёт следующий промпт. Поэтому `finished` идёт в свою
- * нейтральную секцию, а в «ждут тебя», в счётчик favicon и в уведомления попадают только
- * разрешение, вопрос и сбой.
- */
-export function sectionOf(card) {
-  if (card?.status !== 'waiting') return 'busy';
-  return card.reason === 'finished' ? 'done' : 'attn';
 }

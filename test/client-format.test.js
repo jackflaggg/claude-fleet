@@ -2,21 +2,19 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ageText,
-  durationText,
   escapeHtml,
   plural,
   projectMark,
-  relativeTime,
   timerText,
   waitingText,
 } from '../public/js/lib/format.js';
 import { sparkBars, ACTIVITY_BARS } from '../public/js/lib/activity.js';
 
-test('клиентские форматтеры времени сохраняют подписи борда', () => {
+test('подпись «нет активности» считает от последнего события', () => {
   const now = Date.UTC(2026, 7, 2, 12, 0, 0);
-  assert.equal(relativeTime(now - 90_000, now), '1 мин назад');
-  assert.equal(durationText(now - 2 * 60 * 60_000, now), 'идёт 2 ч');
   assert.equal(waitingText(now - 45_000, now), '45 с');
+  assert.equal(waitingText(now - 5 * 60_000, now), '5 мин');
+  assert.equal(waitingText(now - 3 * 60 * 60_000, now), '3 ч');
 });
 
 test('возраст строки и таймер карточки читаются как на табло', () => {

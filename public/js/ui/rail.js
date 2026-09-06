@@ -1,4 +1,4 @@
-import { sectionOf } from '../board-config.js';
+import { isAttention } from '../lib/domain.js';
 import { clock, escapeHtml, projectMark, timeLeftText } from '../lib/format.js';
 
 /* Рейл гавани под шапкой: одна ось времени на последние шесть часов. Три факта, которые
@@ -24,7 +24,7 @@ export function createRail() {
   /* Из снимка рейлу нужны только моменты стартов и ожиданий да границы окна: остальные поля
      карточки меняются на каждом событии хука, и перестраивать по ним ось незачем */
   function railSig(m) {
-    const marks = m.sessions.map((c) => [c.project, c.createdAt, sectionOf(c) === 'attn' ? c.waitingSince : ''].join(''));
+    const marks = m.sessions.map((c) => [c.project, c.createdAt, isAttention(c) ? c.waitingSince : ''].join(''));
     return [m.usage?.startedAt, m.usage?.endsAt, ...marks].join('');
   }
 
@@ -83,7 +83,7 @@ export function createRail() {
         html += `<i class="tick" style="left:${pct(c.createdAt, b)};--tk:hsl(${hue} 55% 62%)" title="${name} · ${clock(c.createdAt)}"></i>`;
       }
       // красная засечка только у тех, кому нужен ты; закончивший ход просто стоит
-      if (sectionOf(c) === 'attn' && c.waitingSince >= b.left && c.waitingSince <= b.right) {
+      if (isAttention(c) && c.waitingSince >= b.left && c.waitingSince <= b.right) {
         html += `<i class="tick wait" style="left:${pct(c.waitingSince, b)}" title="${name} · ждёт с ${clock(c.waitingSince)}"></i>`;
       }
     }
