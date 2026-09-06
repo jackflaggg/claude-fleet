@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { isProcessAlive, pruneClosedSessions } from '../liveness.js';
+import { isProcessAlive, pruneClosedSessions } from '../src/fleet/liveness.js';
 
 if (typeof global.gc !== 'function') {
   throw new Error('запусти с --expose-gc');

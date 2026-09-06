@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isProcessAlive, pruneClosedSessions } from '../liveness.js';
+import { isProcessAlive, pruneClosedSessions } from '../src/fleet/liveness.js';
 
 test('PID probe использует signal 0 и только ESRCH считает смертью', () => {
   let called = null;

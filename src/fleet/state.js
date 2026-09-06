@@ -6,8 +6,8 @@
  * Статус выводится приблизительно из типа события, точной телеметрии у хуков нет.
  */
 
-import { bumpActivity } from './public/js/lib/activity.js';
-import { AGENT, STATUS, WAIT_REASON } from './public/js/lib/domain.js';
+import { bumpActivity } from '../../public/js/lib/activity.js';
+import { AGENT, STATUS, WAIT_REASON } from '../../public/js/lib/domain.js';
 
 /**
  * События хука, которые борд понимает. Схема событий Claude Code не наша и может измениться
@@ -43,7 +43,7 @@ const MAX_NOTE = 120;
  * Искра активности (10 столбиков по минутам) считается общим с бордом кодом: сервер
  * накапливает, браузер досдвигает по текущему времени. Реэкспорт нужен тестам ядра.
  */
-export { ACTIVITY_BARS, bumpActivity, shiftActivity } from './public/js/lib/activity.js';
+export { ACTIVITY_BARS, bumpActivity, shiftActivity } from '../../public/js/lib/activity.js';
 
 function clip(value, limit = MAX_TITLE) {
   if (typeof value !== 'string') return '';

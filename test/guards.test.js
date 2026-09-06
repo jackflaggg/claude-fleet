@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey, OTHER_KIND } from '../guards.js';
+import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey, OTHER_KIND } from '../src/http/guards.js';
 
 const PORT = 4319;
 const local = () => buildAllowLists({ host: '127.0.0.1', port: PORT });

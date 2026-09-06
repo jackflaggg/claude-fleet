@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveFocus } from '../focus.js';
+import { resolveFocus } from '../src/focus/focus.js';
 
 const LAUNCHER = '/usr/local/bin/webstorm';
 const APP = 'WebStorm';

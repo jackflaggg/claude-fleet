@@ -20,11 +20,11 @@ import { readFileSync, writeFileSync, renameSync, statSync, existsSync } from 'n
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, resolve, sep } from 'node:path';
-import { applyEvent, pruneStale, isHandledEvent } from './state.js';
-import { resolveFocus } from './focus.js';
-import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './guards.js';
-import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './usage.js';
-import { isProcessAlive, pruneClosedSessions } from './liveness.js';
+import { applyEvent, pruneStale, isHandledEvent } from './src/fleet/state.js';
+import { resolveFocus } from './src/focus/focus.js';
+import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './src/http/guards.js';
+import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './src/usage/usage.js';
+import { isProcessAlive, pruneClosedSessions } from './src/fleet/liveness.js';
 import { AGENT, isAskingPermission } from './public/js/lib/domain.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));

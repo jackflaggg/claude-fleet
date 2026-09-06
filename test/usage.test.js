@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from '../usage.js';
+import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from '../src/usage/usage.js';
 
 const WINDOW = 5 * 60 * 60 * 1000;
 const at = (iso) => Date.parse(iso);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, pruneStale, isHandledEvent, shiftActivity, ACTIVITY_BARS } from '../state.js';
+import { applyEvent, pruneStale, isHandledEvent, shiftActivity, ACTIVITY_BARS } from '../src/fleet/state.js';
 import { STATUS, WAIT_REASON } from '../public/js/lib/domain.js';
 
 const NOW = 1_700_000_000_000;
