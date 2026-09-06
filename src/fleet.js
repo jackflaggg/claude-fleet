@@ -29,8 +29,11 @@ import { resolveFocus } from './focus/focus.js';
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './http/guards.js';
 import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './usage/usage.js';
 import { isProcessAlive, pruneClosedSessions } from './fleet/liveness.js';
-import { AGENT, isAskingPermission } from '../public/js/lib/domain.js';
+import { AGENT } from '../public/js/lib/domain.js';
 import { createSseHub } from './http/sse-hub.js';
+import { MAX_BODY, readBody } from './http/body.js';
+import { createChannelRegistry } from './channel/registry.js';
+import { createChannelRoutes } from './channel/routes.js';
 
 const STATIC_TYPES = new Map([
   ['.css', 'text/css; charset=utf-8'],
@@ -39,30 +42,6 @@ const STATIC_TYPES = new Map([
 ]);
 const LIVENESS_INTERVAL_MS = 10 * 1000;
 const LIVENESS_GRACE_MS = 10 * 1000;
-
-/**
- * Ответ с борда идёт через канал Claude Code (research preview): отдельный MCP-процесс
- * `channel/fleet-channel.js` на каждую сессию, который Claude Code сам запускает и который
- * держит к нам SSE `/channel/commands`. Прототип за флагом FLEET_CHANNEL=1 (CHANNEL_ENABLED):
- * без него ни маршрутов, ни полей в снимке, борд выглядит и работает как раньше.
- */
-/** Каналов не больше, чем живых сессий; потолок страхует Map от роста при бесконечных реконнектах. */
-const MAX_CHANNELS = 64;
-/** Тело команды с борда: текст ответа, а не результат инструмента. */
-const MAX_CHANNEL_BODY = 16 * 1024;
-const MAX_CHANNEL_TEXT = 4000;
-/**
- * Запрос разрешения, на который карточка так и не встала в ожидание, считаем закрытым
- * в терминале. Пауза нужна из-за порядка событий: уведомление канала и hook-событие
- * идут разными путями, и любое из них может прийти первым.
- */
-const PERMISSION_SETTLE_MS = 3000;
-/**
- * Форма request_id, которую Claude Code отдавал каналу на момент прототипа: пять строчных
- * букв. Это наблюдение, а не контракт, поэтому отказ по нему обязан попадать в лог: иначе
- * смена формата в новой версии выглядит как «кнопки разрешения просто не появляются».
- */
-const REQUEST_ID_RE = /^[a-km-z]{5}$/;
 
 /**
  * Окно лимита Claude: папка транскриптов, длина и выравнивание окна приходят из конфига.
@@ -86,15 +65,6 @@ const USAGE_MAX_TAIL = 24 * 1024 * 1024;
  * в тестах, и сканы у них последовательны внутри каждого, а транскрипты там пустые.
  */
 const READ_BUFFER = Buffer.allocUnsafe(1024 * 1024);
-
-/**
- * Событие крупнее этого отбрасываем целиком: JSON нельзя распарсить по кусочку. Четыре
- * мегабайта, а не один: в fleet.log 03.09 два PostToolUse по 1.0 и 1.3 МБ (tool_response
- * с большим файлом) были отброшены, и карточка залипла на прошлом статусе до следующего тула.
- */
-const MAX_BODY = 4 * 1024 * 1024;
-/** А это уже не наш хук, а чей-то поток без конца - рвём соединение, не дочитывая. */
-const HARD_BODY_LIMIT = 32 * 1024 * 1024;
 
 /**
  * Рассылка снимка коалесцируется: шторм событий хука (несколько в секунду на активную сессию)
@@ -127,29 +97,6 @@ const MAX_UNKNOWN_KINDS = 12;
  * куда чаще, поэтому под нож попадают только реально мёртвые.
  */
 const PRUNE_INTERVAL_MS = 5 * 60 * 1000;
-
-async function readBody(req, limit = MAX_BODY) {
-  const chunks = [];
-  let size = 0;
-  let overflow = false;
-  for await (const chunk of req) {
-    size += chunk.length;
-    // Событие с содержимым большого файла в tool_response может весить сотни КБ.
-    // Сверх лимита в память не копим, но поток дочитываем: оборвать его - значит
-    // разрушить сокет, и отправитель не получит внятный ответ, а просто увидит обрыв.
-    if (size > limit) {
-      overflow = true;
-      if (size > HARD_BODY_LIMIT) {
-        req.destroy();
-        break;
-      }
-      continue;
-    }
-    chunks.push(chunk);
-  }
-  if (overflow) throw new Error(`тело события ${size} байт при лимите ${limit}`);
-  return Buffer.concat(chunks).toString('utf8');
-}
 
 /**
  * id сессии из хвоста пути. Битое percent-encoding даёт null, а не URIError: раньше один
@@ -290,162 +237,21 @@ export function createFleet({
 
   function snapshot() {
     const cards = Object.values(sessions).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    return CHANNEL_ENABLED ? cards.map(withChannel) : cards;
+    return CHANNEL_ENABLED ? cards.map(channels.decorate) : cards;
   }
 
   /**
-   * Канал ответа: pid процесса агента -> открытый SSE-поток к процессу канала (handle хаба). Ключ тот же,
-   * что у карточки (`processPid`), так карточка и канал находят друг друга без общего id:
-   * процесс канала знает только своего родителя (`process.ppid`), а hook-команда - своего.
-   * В состоянии карточек этого нет намеренно: канал живёт ровно столько, сколько соединение.
+   * Ответ с борда идёт через канал Claude Code (research preview): отдельный MCP-процесс
+   * `channel/fleet-channel.js` на каждую сессию, который Claude Code сам запускает и который
+   * держит к нам SSE `/channel/commands`. Прототип за флагом FLEET_CHANNEL=1 (CHANNEL_ENABLED):
+   * без него ни маршрутов, ни полей в снимке, борд выглядит и работает как раньше.
    */
-  const channels = new Map();
-  /** pid -> открытый запрос разрешения из Claude Code, пока борд или терминал не ответили. */
-  const pendingPermissions = new Map();
-
-  function withChannel(card) {
-    const pid = card.processPid;
-    const pending = pendingPermissions.get(pid);
-    return {
-      ...card,
-      channel: channels.has(pid),
-      permission: pending
-        ? { requestId: pending.requestId, toolName: pending.toolName, description: pending.description, inputPreview: pending.inputPreview }
-        : null,
-    };
-  }
-
-  function sendChannelCommand(pid, command) {
-    const channel = channels.get(pid);
-    if (!channel) return false;
-    return channelStreams.write(channel.handle, `data: ${JSON.stringify(command)}\n\n`);
-  }
-
-  /** Процесс канала держит этот поток открытым всю жизнь сессии; команды борда идут по нему. */
-  function handleChannelCommands(req, res, url) {
-    const pid = Number(url.searchParams.get('pid'));
-    if (!Number.isSafeInteger(pid) || pid <= 1) {
-      res.writeHead(400).end('нужен pid');
-      return;
-    }
-    if (!channels.has(pid) && channels.size >= MAX_CHANNELS) {
-      res.writeHead(503).end('слишком много каналов');
-      return;
-    }
-    const previous = channels.get(pid);
-    const handle = channelStreams.open(req, res, 'fleet channel', {
-      onClose: () => {
-        // Прежний поток того же pid уже вытеснен: его закрытие реестр не трогает.
-        if (channels.get(pid)?.handle !== handle) return;
-        channels.delete(pid);
-        pendingPermissions.delete(pid);
-        broadcast();
-      },
-    });
-    channels.set(pid, { handle, since: clock() });
-    // Переподключение того же процесса: прежний поток закрываем, иначе команды уйдут в пустоту.
-    // Новый handle уже в реестре, поэтому onClose прежнего его не снимет.
-    if (previous) channelStreams.end(previous.handle);
-    log(`канал подключён: pid ${pid}`);
-    broadcast();
-  }
-
-  /** Claude Code открыл диалог разрешения и отдал его каналу; тот пересылает сюда. */
-  async function handlePermissionRequest(req, res) {
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, MAX_CHANNEL_BODY));
-    } catch {
-      res.writeHead(400).end('плохое тело');
-      return;
-    }
-    const pid = Number(body?.pid);
-    const requestId = String(body?.request_id ?? '');
-    if (!channels.has(pid)) {
-      res.writeHead(409).end('канал не подключён');
-      return;
-    }
-    if (!REQUEST_ID_RE.test(requestId)) {
-      log(`запрос разрешения отклонён: request_id «${requestId.slice(0, 40)}» не похож на формат Claude Code, обновился формат?`);
-      res.writeHead(409).end('плохой request_id');
-      return;
-    }
-    pendingPermissions.set(pid, {
-      requestId,
-      toolName: String(body.tool_name ?? '').slice(0, 80),
-      description: String(body.description ?? '').slice(0, 400),
-      inputPreview: String(body.input_preview ?? '').slice(0, 1200),
-      at: clock(),
-    });
-    res.writeHead(204).end();
-    broadcast();
-  }
-
-  /** Кнопка «Разрешить»/«Отказать» на карточке. */
-  async function handlePermissionVerdict(req, res, id) {
-    const card = sessions[id];
-    const pending = card && pendingPermissions.get(card.processPid);
-    if (!pending) {
-      res.writeHead(409).end('запрос разрешения уже закрыт');
-      return;
-    }
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, MAX_CHANNEL_BODY));
-    } catch {
-      res.writeHead(400).end('плохое тело');
-      return;
-    }
-    const behavior = body?.behavior === 'allow' ? 'allow' : body?.behavior === 'deny' ? 'deny' : null;
-    if (!behavior) {
-      res.writeHead(400).end('behavior: allow | deny');
-      return;
-    }
-    const sent = sendChannelCommand(card.processPid, { type: 'permission', request_id: pending.requestId, behavior });
-    pendingPermissions.delete(card.processPid);
-    res.writeHead(sent ? 204 : 409).end();
-    broadcast();
-  }
-
-  /** Строка ответа на карточке: текст уходит в сессию как следующий ход. */
-  async function handleChannelMessage(req, res, id) {
-    const card = sessions[id];
-    if (!card || !channels.has(card.processPid)) {
-      res.writeHead(409).end('у сессии нет канала');
-      return;
-    }
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, MAX_CHANNEL_BODY));
-    } catch {
-      res.writeHead(400).end('плохое тело');
-      return;
-    }
-    const text = typeof body?.text === 'string' ? body.text.trim().slice(0, MAX_CHANNEL_TEXT) : '';
-    if (!text) {
-      res.writeHead(400).end('пустой текст');
-      return;
-    }
-    const sent = sendChannelCommand(card.processPid, { type: 'message', text });
-    res.writeHead(sent ? 204 : 409).end();
-  }
-
-  /**
-   * Запрос разрешения, который закрыли в терминале, нам никто не сообщит: Claude Code шлёт
-   * каналу только открытие. Признак - карточка не стоит (или уже не стоит) в ожидании
-   * разрешения, с паузой на разный порядок прихода уведомления и hook-события.
-   */
-  function dropSettledPermissions(now) {
-    if (!pendingPermissions.size) return;
-    const byPid = new Map();
-    for (const card of Object.values(sessions)) {
-      if (Number.isSafeInteger(card?.processPid)) byPid.set(card.processPid, card);
-    }
-    for (const [pid, pending] of pendingPermissions) {
-      if (now - pending.at < PERMISSION_SETTLE_MS) continue;
-      if (!isAskingPermission(byPid.get(pid))) pendingPermissions.delete(pid);
-    }
-  }
+  const channels = createChannelRegistry({ hub: channelStreams, clock, log, onChange: () => broadcast() });
+  const channelRoutes = createChannelRoutes({
+    registry: channels,
+    findCard: (id) => sessions[id],
+    broadcast: () => broadcast(),
+  });
 
   /**
    * Счётчики для диагностики (`GET /stats`). Нужны, чтобы не гадать о цене хука: у события
@@ -679,7 +485,7 @@ export function createFleet({
 
     const now = clock();
     sessions = applyEvent(sessions, event, now);
-    if (CHANNEL_ENABLED) dropSettledPermissions(now);
+    if (CHANNEL_ENABLED) channels.dropSettled(now, Object.values(sessions));
     broadcast();
     persist();
   }
@@ -822,19 +628,19 @@ export function createFleet({
     }
 
     if (CHANNEL_ENABLED && url.pathname.startsWith('/channel/')) {
-      if (req.method === 'GET' && url.pathname === '/channel/commands') return handleChannelCommands(req, res, url);
+      if (req.method === 'GET' && url.pathname === '/channel/commands') return channelRoutes.commands(req, res, url);
       if (req.method === 'POST' && url.pathname === '/channel/permission-request') {
-        return guard(handlePermissionRequest(req, res), res, 'запрос разрешения не обработан');
+        return guard(channelRoutes.permissionRequest(req, res), res, 'запрос разрешения не обработан');
       }
       if (req.method === 'POST' && url.pathname.startsWith('/channel/permission/')) {
         const id = decodeId(url.pathname, '/channel/permission/');
         if (id === null) return res.writeHead(400).end('плохой id');
-        return guard(handlePermissionVerdict(req, res, id), res, 'вердикт не обработан');
+        return guard(channelRoutes.permissionVerdict(req, res, id), res, 'вердикт не обработан');
       }
       if (req.method === 'POST' && url.pathname.startsWith('/channel/message/')) {
         const id = decodeId(url.pathname, '/channel/message/');
         if (id === null) return res.writeHead(400).end('плохой id');
-        return guard(handleChannelMessage(req, res, id), res, 'ответ сессии не обработан');
+        return guard(channelRoutes.message(req, res, id), res, 'ответ сессии не обработан');
       }
     }
 
