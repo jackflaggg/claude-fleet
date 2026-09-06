@@ -385,12 +385,6 @@ test('createdAt ставится при создании карточки и н�
   assert.equal(state.s1.updatedAt, NOW + 5000, 'а updatedAt идёт за последним событием');
 });
 
-test('карточка без createdAt (поднятая с диска старого формата) получает его на событии', () => {
-  const restored = { s1: { sessionId: 's1', status: STATUS.WORKING, updatedAt: NOW - 1000 } };
-  const state = applyEvent(restored, ev({ hook_event_name: 'PostToolUse', tool_name: 'Read', tool_response: {} }), NOW);
-  assert.equal(state.s1.createdAt, NOW, 'проставлен на ближайшем событии, а не остался undefined');
-});
-
 test('appId (где живёт сессия) сохраняется и переживает следующие события', () => {
   let state = applyEvent({}, ev({ hook_event_name: 'SessionStart', appId: 'org.alacritty' }), NOW);
   assert.equal(state.s1.appId, 'org.alacritty');

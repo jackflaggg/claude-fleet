@@ -284,16 +284,12 @@ export function applyEvent(sessions, event, now) {
     reason: null,
     note: null,
     waitingSince: null,
+    // момент, когда карточку впервые увидели; ставится один раз - для «идёт N мин».
+    // Карточки старого персиста без этого поля мигрирует store при загрузке.
+    createdAt: now,
   };
 
   const card = { ...previous, updatedAt: now };
-  // Старый персист появился до поддержки нескольких агентов. Отсутствующее поле всегда
-  // означает Claude: такие карточки должны пережить обновление без миграции файла состояния.
-  if (!card.agent) card.agent = agent;
-  // момент, когда карточку впервые увидели; ставим один раз и не трогаем - для «идёт N мин».
-  // Проставляем здесь (а не в дефолте выше), чтобы карточки, поднятые с диска до появления
-  // поля, тоже получили его на ближайшем событии, а не остались навсегда без возраста.
-  if (!card.createdAt) card.createdAt = now;
   if (typeof event.cwd === 'string' && event.cwd) {
     card.cwd = event.cwd;
     card.project = place.project;
