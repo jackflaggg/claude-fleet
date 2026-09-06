@@ -1,5 +1,7 @@
 # claude-fleet
 
+[![CI](https://github.com/jackflaggg/claude-fleet/actions/workflows/ci.yml/badge.svg)](https://github.com/jackflaggg/claude-fleet/actions/workflows/ci.yml)
+
 One local dashboard for every running Claude Code and Codex session: what each one is doing
 and which one is waiting for you. Runs entirely on your Mac, sends nothing to the network.
 
