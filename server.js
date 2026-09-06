@@ -26,41 +26,28 @@ import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './src/h
 import { collectStamps, foldStamps, describeWindow, isFreshTranscript } from './src/usage/usage.js';
 import { isProcessAlive, pruneClosedSessions } from './src/fleet/liveness.js';
 import { AGENT, isAskingPermission } from './public/js/lib/domain.js';
+import { applyEnvFile, loadConfig } from './src/config.js';
+import { log } from './src/log.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
-/** Лог в fleet.log со временем: без него в логе стопка одинаковых строк без понимания, когда. */
-function log(message) {
-  process.stdout.write(`${new Date().toLocaleString('ru-RU')}  ${message}\n`);
-}
+// Конфиг из .env (опционально) и окружения: имена переменных и дефолты живут в src/config.js.
+applyEnvFile(join(ROOT, '.env'), { log, exists: existsSync });
+const config = loadConfig(process.env, { log, exists: existsSync, root: ROOT });
+const {
+  port: PORT,
+  host: HOST,
+  stateFile: STATE_FILE,
+  staleMs: STALE_MS,
+  blankMs: BLANK_MS,
+  channelEnabled: CHANNEL_ENABLED,
+  transcriptsDir: TRANSCRIPTS_DIR,
+  usageWindowMs: USAGE_WINDOW_MS,
+  usageAlignMs: USAGE_ALIGN_MS,
+  webstormLauncher: WEBSTORM_LAUNCHER,
+  webstormApp: WEBSTORM_APP,
+} = config;
 
-// Конфиг из .env (опционально). Node 22 читает .env без зависимостей; уже заданные
-// переменные окружения файл не перебивает. Файла нет - дефолты; битый - дефолты и строка в лог.
-const ENV_FILE = join(ROOT, '.env');
-if (existsSync(ENV_FILE)) {
-  try {
-    process.loadEnvFile(ENV_FILE);
-  } catch (error) {
-    log(`.env не прочитался (${error.message}), работаю на дефолтах`);
-  }
-}
-
-/**
- * Число из окружения. Не задано - дефолт молча; задано, но не число или меньше min - дефолт
- * со строкой в лог. Прежний `Number(x) || 6` превращал FLEET_STALE_HOURS=0 в шесть часов,
- * и опечатка в конфиге не проявлялась ничем.
- */
-function envNumber(name, fallback, min = Number.MIN_VALUE) {
-  const raw = process.env[name];
-  if (raw === undefined || raw.trim() === '') return fallback;
-  const value = Number(raw);
-  if (Number.isFinite(value) && value >= min) return value;
-  log(`${name}=${raw}: ожидалось число не меньше ${min}, беру ${fallback}`);
-  return fallback;
-}
-
-const PORT = envNumber('FLEET_PORT', 4319, 1);
-const HOST = process.env.FLEET_HOST || '127.0.0.1';
 const PUBLIC_DIR = join(ROOT, 'public');
 const INDEX_FILE = join(PUBLIC_DIR, 'index.html');
 const STATIC_TYPES = new Map([
@@ -68,23 +55,15 @@ const STATIC_TYPES = new Map([
   ['.js', 'text/javascript; charset=utf-8'],
   ['.woff2', 'font/woff2'],
 ]);
-// Путь персиста настраиваемый ради тестов: они поднимают настоящий server.js спавном и не
-// должны затирать состояние живого борда в этом же репозитории.
-const STATE_FILE = process.env.FLEET_STATE_FILE || join(ROOT, '.fleet-state.json');
-const STALE_MS = envNumber('FLEET_STALE_HOURS', 6) * 60 * 60 * 1000;
-// Отдельный, куда более короткий порог для карточек без задачи и без инструмента: за ними
-// нет работы, которую можно потерять (см. isBlank в state.js).
-const BLANK_MS = envNumber('FLEET_BLANK_MINUTES', 15) * 60 * 1000;
 const LIVENESS_INTERVAL_MS = 10 * 1000;
 const LIVENESS_GRACE_MS = 10 * 1000;
 
 /**
  * Ответ с борда идёт через канал Claude Code (research preview): отдельный MCP-процесс
  * `channel/fleet-channel.js` на каждую сессию, который Claude Code сам запускает и который
- * держит к нам SSE `/channel/commands`. Прототип за флагом: без него ни маршрутов, ни полей
- * в снимке, борд выглядит и работает как раньше.
+ * держит к нам SSE `/channel/commands`. Прототип за флагом FLEET_CHANNEL=1 (CHANNEL_ENABLED):
+ * без него ни маршрутов, ни полей в снимке, борд выглядит и работает как раньше.
  */
-const CHANNEL_ENABLED = process.env.FLEET_CHANNEL === '1';
 /** Каналов не больше, чем живых сессий; потолок страхует Map от роста при бесконечных реконнектах. */
 const MAX_CHANNELS = 64;
 /** Тело команды с борда: текст ответа, а не результат инструмента. */
@@ -98,18 +77,10 @@ const MAX_CHANNEL_TEXT = 4000;
 const PERMISSION_SETTLE_MS = 3000;
 
 /**
- * Окно лимита Claude. Папка транскриптов и длина окна - в .env: путь машинно-зависимый,
- * а пять часов это свойство тарифа, а не наше решение. Опрос раз в минуту: старт окна
- * двигается только первым запросом после паузы, чаще смотреть нечего (обратный отсчёт
- * тикает на фронте сам).
+ * Окно лимита Claude: папка транскриптов, длина и выравнивание окна приходят из конфига.
+ * Опрос раз в минуту: старт окна двигается только первым запросом после паузы, чаще
+ * смотреть нечего (обратный отсчёт тикает на фронте сам).
  */
-const TRANSCRIPTS_DIR = process.env.FLEET_TRANSCRIPTS || join(os.homedir(), '.claude', 'projects');
-const USAGE_WINDOW_MS = envNumber('FLEET_USAGE_HOURS', 5) * 60 * 60 * 1000;
-/**
- * Claude открывает окно не по секунде первого запроса, а по границе получаса вниз (сверено
- * с `/usage`, см. usage.js). 0 отключает выравнивание, если в тарифе это изменится.
- */
-const USAGE_ALIGN_MS = envNumber('FLEET_USAGE_ALIGN_MIN', 30, 0) * 60 * 1000;
 const USAGE_POLL_MS = 60 * 1000;
 /**
  * Потолок на первое чтение незнакомого файла. Транскрипт долгой сессии доходит до 16 МБ,
@@ -158,19 +129,8 @@ const SSE_KEEPALIVE_MS = 30_000;
 const { hosts: ALLOWED_HOSTS, origins: ALLOWED_ORIGINS } = buildAllowLists({
   host: HOST,
   port: PORT,
-  extraHosts: process.env.FLEET_ALLOWED_HOSTS,
+  extraHosts: config.extraHosts,
 });
-
-/**
- * Лаунчер WebStorm и имя приложения берём из .env, не хардкодим в коде: путь установки
- * отличается между машинами (/usr/local vs homebrew). `webstorm <path>` фокусит окно
- * нужного проекта, если он открыт; `open -a <app>` так не умеет (поднимает последнее окно).
- */
-const WEBSTORM_LAUNCHER = (() => {
-  const launcher = process.env.FLEET_WEBSTORM;
-  return launcher && existsSync(launcher) ? launcher : null;
-})();
-const WEBSTORM_APP = process.env.FLEET_WEBSTORM_APP || 'WebStorm';
 
 /**
  * Восстанавливает состояние с диска, но только если файл записан ПОСЛЕ последней загрузки

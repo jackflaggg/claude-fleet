@@ -22,26 +22,19 @@ import { fileURLToPath } from 'node:url';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { applyEnvFile, loadConfig } from '../src/config.js';
+import { createLog } from '../src/log.js';
 
-const ROOT = dirname(fileURLToPath(import.meta.url));
-const ENV_FILE = join(ROOT, '..', '.env');
-if (existsSync(ENV_FILE)) {
-  try {
-    process.loadEnvFile(ENV_FILE);
-  } catch {
-    // битый .env не должен ронять канал
-  }
-}
-
-const PORT = Number(process.env.FLEET_PORT) || 4319;
-const FLEET = `http://127.0.0.1:${PORT}`;
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PID = process.ppid;
+const log = createLog({ write: (line) => process.stderr.write(line), prefix: `fleet-channel[${PID}]` });
+
+// Тот же .env и тот же loadConfig, что у сервера: порт читается одним способом в одном месте.
+applyEnvFile(join(REPO_ROOT, '.env'), { log, exists: existsSync });
+const config = loadConfig(process.env, { log, exists: existsSync, root: REPO_ROOT });
+const FLEET = `http://127.0.0.1:${config.port}`;
 const RECONNECT_MIN_MS = 2000;
 const RECONNECT_MAX_MS = 30_000;
-
-function log(message) {
-  process.stderr.write(`fleet-channel[${PID}] ${message}\n`);
-}
 
 const mcp = new Server(
   { name: 'fleet', version: '0.1.0' },
