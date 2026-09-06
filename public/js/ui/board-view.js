@@ -1,20 +1,16 @@
-import { AGENT_LABEL, AGENT_ORDER, IDLE_MS, STATUS_META, WAIT_BADGE, termColor } from '../board-config.js';
+import { IDLE_MS } from '../board-config.js';
 import { sparkBars } from '../lib/activity.js';
-import { ACTIVE_STATUSES, AGENT, SECTION, STATUS, WAIT_REASON, agentOf, sectionOf } from '../lib/domain.js';
-import {
-  ageText,
-  escapeHtml,
-  plural,
-  projectMark,
-  timerText,
-  waitingText,
-} from '../lib/format.js';
+import { ACTIVE_STATUSES, AGENT, SECTION, agentOf, sectionOf } from '../lib/domain.js';
+import { ageText, plural, timerText, waitingText } from '../lib/format.js';
 import { updateFavicon } from './favicon.js';
+import { cardHtml, cardSig, rowHtml } from './markup.js';
+import { layoutKey, splitSections } from './order.js';
 
-const SPARK_BARS = 10;
 /* искра гаснет, когда последние две минуты пусты: так «затухание» видно раньше бейджа */
 const QUIET_MINUTES = 2;
 
+/* Здесь только склейка с документом: разметку строят чистые функции `markup.js`, порядок
+   и раскладку решает `order.js`, и то и другое покрыто тестами без DOM. */
 export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onReply }) {
   const board = document.getElementById('board');
   const empty = document.getElementById('empty');
@@ -23,106 +19,9 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
   let lastLayout = '';
   const slots = new Map();
 
-  function avatarHtml(name) {
-    const mark = projectMark(name);
-    const style = `--av-fg:hsl(${mark.hue} 62% 70%);--av-bg:hsl(${mark.hue} 55% 60% / .16);--av-br:hsl(${mark.hue} 55% 62% / .34)`;
-    return `<span class="avatar" style="${style}" aria-hidden="true">${escapeHtml(mark.letters)}</span>`;
-  }
-
-  /* агент подписан монохромно рядом с терминалом: своего цвета у него нет, цвет на борде
-     значит либо проект (монограмма), либо «нужен ты» (красный) */
-  function originHtml(c, extraClass = '') {
-    const terminal = c.terminal
-      ? `<span class="term" style="--tc:${termColor(c.terminal)}">${escapeHtml(c.terminal)}</span>`
-      : '';
-    return `<span class="origin ${extraClass}"><span class="agent">${AGENT_LABEL[agentOf(c)]}</span>${terminal}</span>`;
-  }
-
-  /* worktree стоит в группе родительского проекта, поэтому имя копии надо назвать в самой
-     карточке/строке - иначе две сессии одного проекта выглядят как правки одного и того же */
-  function wtreeHtml(c) {
-    return c.worktree ? `<span class="wtree" title="git worktree">${escapeHtml(c.worktree)}</span>` : '';
-  }
-
-  function toolHtml(c) {
-    if (!c.tool) return '';
-    const info = c.toolInfo ? ' · ' + escapeHtml(c.toolInfo) : '';
-    return `<span class="tool"><span class="tt"><span class="tn">${escapeHtml(c.tool)}</span>${info}</span></span>`;
-  }
-
+  // разделители не встречаются в полях карточки, поэтому склейка соседних сессий однозначна
   function sig(sessions) {
-    return sessions.map((c) => [c.sessionId, cardSig(c)].join('')).join('');
-  }
-
-  function cardSig(c) {
-    return [
-      c.agent, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.project,
-      c.worktree, c.createdAt, c.waitingSince, c.channel, c.permission?.requestId,
-    ].join('');
-  }
-
-  function badgeFor(c) {
-    if (c.status === STATUS.WAITING) {
-      return { cls: sectionOf(c) === SECTION.DONE ? 'done' : 'waiting', label: WAIT_BADGE[c.reason] || 'ждёт тебя' };
-    }
-    return STATUS_META[c.status] || STATUS_META.ready;
-  }
-
-  /* Ответ прямо с борда: только когда к сессии подключён канал (FLEET_CHANNEL=1 и сессия
-     запущена с каналом fleet). Без канала карточка остаётся как есть - кнопки-обманки
-     хуже их отсутствия. */
-  function actsHtml(c) {
-    if (!c.channel) return '';
-    if (c.permission) {
-      return '<span class="acts"><button class="act ok" type="button" data-verdict="allow">Разрешить</button>'
-        + '<button class="act no" type="button" data-verdict="deny">Отказать</button>'
-        + '<span class="needs">через канал fleet</span></span>';
-    }
-    if (c.reason === WAIT_REASON.PERMISSION) return '';
-    return '<form class="reply"><input type="text" placeholder="Ответить сессии…" aria-label="ответ сессии" maxlength="4000">'
-      + '<button class="act" type="submit">Отправить</button><span class="needs">через канал fleet</span></form>';
-  }
-
-  function killHtml(c) {
-    return `<button class="kill" type="button" data-kill="${escapeHtml(c.sessionId)}" title="убрать карточку с борда" aria-label="убрать карточку">×</button>`;
-  }
-
-  /* Карточка ожидания. Главная цифра - сколько она уже ждёт, крупно справа как задержка
-     на табло. Текст уведомления объясняет, ЧЕГО ждут; при разрешении рядом стоит тул,
-     на который спрашивают, и решение принимается не вставая. У закончившей ход карточки
-     та же форма, но без красного и без дыхания: она не зовёт, а просто стоит без промпта. */
-  function cardHtml(c) {
-    const b = badgeFor(c);
-    const done = sectionOf(c) === SECTION.DONE;
-    const asking = c.reason === WAIT_REASON.PERMISSION || c.reason === WAIT_REASON.QUESTION;
-    const ask = c.note || c.permission?.description || '';
-    const askHtml = ask ? `<div class="ask">${escapeHtml(ask)}</div>` : '';
-    const taskHtml = c.title ? `<div class="task">${escapeHtml(c.title)}</div>` : '';
-    // время ожидания берём из waitingSince, а не из updatedAt: updatedAt двигает любое
-    // входящее событие, и счётчик обнулялся бы прямо во время ожидания
-    const since = c.waitingSince || c.updatedAt || 0;
-    return `${done ? '' : '<i class="glow"></i>'}${killHtml(c)}
-      <div class="top"><span class="badge ${b.cls}">${b.label}</span>
-        <span class="who">${avatarHtml(c.project)}<span class="proj">${escapeHtml(c.project)}</span>${wtreeHtml(c)}</span></div>
-      <div class="timer"><b class="wt" data-ts="${since}">${timerText(since)}</b><span>${done ? 'простаивает' : 'ждёт'}</span></div>
-      <div class="body">${askHtml}${asking ? toolHtml(c) : ''}${taskHtml}</div>
-      <div class="foot">${actsHtml(c)}${originHtml(c)}</div>`;
-  }
-
-  /* Строка секции «в работе»: ячейки берут колонки общей таблицы через subgrid, поэтому
-     статусы читаются столбцом. Пустые ячейки всё равно выводим - без них сетка съезжает. */
-  function rowHtml(c) {
-    const b = badgeFor(c);
-    const task = c.title ? escapeHtml(c.title) : '<span class="none">новая сессия, промпта ещё нет</span>';
-    const bars = '<i></i>'.repeat(SPARK_BARS);
-    return `<div class="c-proj">${avatarHtml(c.project)}<span class="proj">${escapeHtml(c.project)}</span></div>
-      <div class="c-task">${wtreeHtml(c)}${task}</div>
-      <div class="c-act">${c.status !== STATUS.READY ? toolHtml(c) : ''}<span class="idle-note">нет активности <span class="idle-t"></span></span></div>
-      <span class="spark">${bars}</span>
-      <span class="badge ${b.cls}">${b.label}</span>
-      <span class="age" data-created="${c.createdAt || 0}">${ageText(c.createdAt)}</span>
-      ${originHtml(c, 'c-origin')}
-      <div class="c-end">${killHtml(c)}</div>`;
+    return sessions.map((c) => [c.sessionId, cardSig(c)].join('\x01')).join('\x02');
   }
 
   /* Карточки живут между рендерами: элемент создаётся один раз на сессию и дальше только
@@ -178,32 +77,13 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     }
   }
 
-  /* строки: проект → агент → старшая сессия выше. Порядок по UUID был случайным и менялся
-     с каждой новой сессией */
-  function rowOrder(a, b) {
-    return String(a.project || '').localeCompare(String(b.project || ''))
-      || AGENT_ORDER.indexOf(agentOf(a)) - AGENT_ORDER.indexOf(agentOf(b))
-      || (a.createdAt || 0) - (b.createdAt || 0)
-      || String(a.sessionId).localeCompare(String(b.sessionId));
-  }
-
-  // кто дольше ждёт, тот выше: разбираешь самое залежавшееся, и появление новой карточки
-  // не сдвигает те, что уже в списке
-  function waitOrder(a, b) {
-    return (a.waitingSince || a.updatedAt || 0) - (b.waitingSince || b.updatedAt || 0);
-  }
-
   function render() {
     const list = data.sessions || [];
-    // три секции: красное «ждут тебя» (разрешение, вопрос, сбой), нейтральное «закончили
-    // ход» (Stop: сессия стоит без промпта, но помощи не просит) и строки «в работе»
-    const waiting = list.filter((c) => sectionOf(c) === SECTION.ATTN).sort(waitOrder);
-    const done = list.filter((c) => sectionOf(c) === SECTION.DONE).sort(waitOrder);
-    const busy = list.filter((c) => sectionOf(c) === SECTION.BUSY).sort(rowOrder);
+    const { waiting, done, busy } = splitSections(list);
 
     // скелет перестраиваем, только если изменился состав секций, а не при каждом событии:
     // порядок внутри секции задаёт сам append (существующий элемент переезжает, не создаётся)
-    const layout = JSON.stringify([waiting.length > 0, done.length > 0, busy.length > 0, list.length > 0 && waiting.length === 0]);
+    const layout = layoutKey({ waiting: waiting.length, done: done.length, busy: busy.length, total: list.length });
     if (layout !== lastLayout) {
       lastLayout = layout;
       let html = '';
