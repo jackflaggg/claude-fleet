@@ -93,6 +93,41 @@ test('GET /channel/commands с чужой страницы получает 403 
   }
 });
 
+test('вход по ссылке с токеном ставит HttpOnly-cookie и уводит на / без query', async () => {
+  const fleet = await startFleet({ env: { FLEET_TOKEN: 'x' } });
+  try {
+    const login = await fetch(`${fleet.base}/?token=x`, { redirect: 'manual' });
+    assert.equal(login.status, 302);
+    assert.equal(login.headers.get('location'), '/');
+    const cookie = login.headers.get('set-cookie');
+    assert.ok(cookie.startsWith('fleet_token=x;'), cookie);
+    for (const attr of ['HttpOnly', 'SameSite=Strict', 'Path=/']) {
+      assert.ok(cookie.includes(attr), `${attr} в ${cookie}`);
+    }
+
+    const wrong = await fetch(`${fleet.base}/?token=nope`, { redirect: 'manual' });
+    assert.equal(wrong.status, 403, 'неверный токен не даёт cookie');
+    assert.equal(wrong.headers.get('set-cookie'), null);
+
+    // loopback остаётся доверенным и без cookie: борд на этой машине работает как прежде
+    assert.equal((await fetch(`${fleet.base}/`)).status, 200);
+    assert.equal((await fetch(`${fleet.base}/stats`)).status, 200);
+  } finally {
+    await fleet.close();
+  }
+});
+
+test('без FLEET_TOKEN параметр token игнорируется и cookie не ставится', async () => {
+  const fleet = await startFleet();
+  try {
+    const res = await fetch(`${fleet.base}/?token=x`, { redirect: 'manual' });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('set-cookie'), null);
+  } finally {
+    await fleet.close();
+  }
+});
+
 test('SSE-клиент, который не читает, отключается, и память сервера не растёт под него', async () => {
   const fleet = await startFleet();
   try {

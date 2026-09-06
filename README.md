@@ -104,7 +104,11 @@ The server binds to `127.0.0.1` and additionally validates the `Host` header. Wi
 check a page in your browser could use DNS rebinding to pose as localhost and read `/stream`,
 which carries your prompts, project paths and shell commands. Mutating requests from a foreign
 origin are rejected by `Sec-Fetch-Site` / `Origin`. To view the board from another device add
-its host to `FLEET_ALLOWED_HOSTS` in `.env`.
+its host to `FLEET_ALLOWED_HOSTS` in `.env` and set `FLEET_TOKEN` (`openssl rand -hex 16`):
+open `http://<host>:4319/?token=<value>` once on that device, the server sets an `HttpOnly`
+cookie and redirects to `/`; without the cookie every non-loopback request gets 403. Loopback
+(this machine, hooks, the channel process) is always trusted. An empty token keeps the old
+behaviour: anyone on the LAN with an allowed `Host` can read the board.
 
 ## Usage window
 
@@ -170,6 +174,7 @@ event sizes by type.
 | `FLEET_PORT` | `4319` | server port, also read by `report.sh` |
 | `FLEET_HOST` | `127.0.0.1` | bind address |
 | `FLEET_ALLOWED_HOSTS` | empty | extra `Host` values, comma-separated |
+| `FLEET_TOKEN` | empty | trust token for non-loopback clients via `/?token=` cookie; empty = off |
 | `FLEET_STALE_HOURS` | `6` | idle threshold for fallback cleanup |
 | `FLEET_BLANK_MINUTES` | `15` | threshold for a card with no task and no tool |
 | `FLEET_TRANSCRIPTS` | `~/.claude/projects` | transcripts folder for the usage window |

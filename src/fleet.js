@@ -30,7 +30,15 @@ import { createSessionStore } from './fleet/store.js';
 import { resolveFocus } from './focus/focus.js';
 
 /** @import { Card, Config } from '../types.js' */
-import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './http/guards.js';
+import {
+  buildAllowLists,
+  isAllowedHost,
+  isCrossSite,
+  isTrustedPeer,
+  parseCookies,
+  boundedKey,
+  TOKEN_COOKIE,
+} from './http/guards.js';
 import { describeWindow } from './usage/usage.js';
 import { createUsageScanner } from './usage/scanner.js';
 import { isProcessAlive, pruneClosedSessions } from './fleet/liveness.js';
@@ -124,6 +132,7 @@ export function createFleet({
     staleMs: STALE_MS,
     blankMs: BLANK_MS,
     channelEnabled: CHANNEL_ENABLED,
+    token: TOKEN,
     transcriptsDir: TRANSCRIPTS_DIR,
     usageWindowMs: USAGE_WINDOW_MS,
     usageAlignMs: USAGE_ALIGN_MS,
@@ -393,6 +402,23 @@ export function createFleet({
     res.writeHead(204).end();
   }
 
+  /**
+   * Cookie доверия по ссылке `/?token=<FLEET_TOKEN>`. HttpOnly: скрипту страницы токен не нужен;
+   * SameSite=Strict: чужая страница не пошлёт её вместе с запросом. Неверный токен это 403 без
+   * cookie, чтобы подбор по ссылке ничего не давал. Cookie сессионная, как записано в плане:
+   * закрыл браузер - открой борд по ссылке снова.
+   */
+  function handleTokenLogin(res, token) {
+    if (!isTrustedPeer('', { [TOKEN_COOKIE]: token ?? '' }, TOKEN)) {
+      res.writeHead(403).end('неверный токен');
+      return;
+    }
+    res.writeHead(302, {
+      Location: '/',
+      'Set-Cookie': `${TOKEN_COOKIE}=${encodeURIComponent(TOKEN)}; HttpOnly; SameSite=Strict; Path=/`,
+    }).end();
+  }
+
   async function handleIndex(res) {
     try {
       const html = await readFile(INDEX_FILE);
@@ -447,6 +473,15 @@ export function createFleet({
 
     if (!isAllowedHost(req.headers, ALLOWED_HOSTS)) {
       res.writeHead(403).end('чужой Host');
+      return;
+    }
+    // Вход по ссылке с токеном: cookie ставится и адрес чистится редиректом, чтобы токен не
+    // оставался в адресной строке и истории браузера. Без FLEET_TOKEN параметр игнорируется.
+    if (TOKEN && req.method === 'GET' && url.pathname === '/' && url.searchParams.has('token')) {
+      return handleTokenLogin(res, url.searchParams.get('token'));
+    }
+    if (!isTrustedPeer(req.socket.remoteAddress, parseCookies(req.headers.cookie), TOKEN)) {
+      res.writeHead(403).end('нет доверия: откройте борд по ссылке с токеном');
       return;
     }
     // Мутирует состояние не только не-GET: GET /channel/commands регистрирует канал и рвёт

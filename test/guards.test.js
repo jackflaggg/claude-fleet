@@ -1,6 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey, OTHER_KIND } from '../src/http/guards.js';
+import {
+  buildAllowLists,
+  isAllowedHost,
+  isCrossSite,
+  isTrustedPeer,
+  parseCookies,
+  boundedKey,
+  OTHER_KIND,
+  TOKEN_COOKIE,
+} from '../src/http/guards.js';
 
 const PORT = 4319;
 const local = () => buildAllowLists({ host: '127.0.0.1', port: PORT });
@@ -84,6 +93,54 @@ test('за реверс-прокси https-Origin своего хоста тож
 test('хост из allowlist не даёт прохода чужому Origin', () => {
   const { origins } = withTablet();
   assert.equal(isCrossSite({ origin: 'http://192.168.1.11:4319' }, origins), true);
+});
+
+// --- Доверие в LAN: loopback всегда, остальные по cookie с токеном ------------------------
+
+const TOKEN = 's3cret';
+const withToken = (value) => ({ [TOKEN_COOKIE]: value });
+
+test('loopback доверен без токена и без cookie во всех написаниях адреса', () => {
+  for (const addr of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+    assert.equal(isTrustedPeer(addr, {}, TOKEN), true, addr);
+    assert.equal(isTrustedPeer(addr, {}, ''), true, addr);
+  }
+});
+
+test('LAN без cookie при заданном токене не доверен', () => {
+  assert.equal(isTrustedPeer('192.168.1.10', {}, TOKEN), false);
+  assert.equal(isTrustedPeer('::ffff:192.168.1.10', {}, TOKEN), false);
+});
+
+test('LAN с верной cookie доверен, с неверной нет', () => {
+  assert.equal(isTrustedPeer('192.168.1.10', withToken(TOKEN), TOKEN), true);
+  assert.equal(isTrustedPeer('192.168.1.10', withToken('wrong'), TOKEN), false);
+  assert.equal(isTrustedPeer('192.168.1.10', withToken(TOKEN + 'x'), TOKEN), false);
+  assert.equal(isTrustedPeer('192.168.1.10', withToken(''), TOKEN), false);
+});
+
+test('токен не задан: LAN доверен как раньше, решает FLEET_ALLOWED_HOSTS', () => {
+  assert.equal(isTrustedPeer('192.168.1.10', {}, ''), true);
+  assert.equal(isTrustedPeer('192.168.1.10', withToken('anything'), ''), true);
+});
+
+test('неизвестный адрес сокета при заданном токене не доверен', () => {
+  assert.equal(isTrustedPeer(undefined, withToken(TOKEN), TOKEN), true, 'cookie решает');
+  assert.equal(isTrustedPeer(undefined, {}, TOKEN), false);
+  assert.equal(isTrustedPeer(undefined, {}, ''), true, 'без токена поведение прежнее');
+});
+
+test('parseCookies: несколько пар, пробелы, percent-encoding, мусор', () => {
+  assert.deepEqual(parseCookies('a=1; fleet_token=abc%20d; b=x=y'), {
+    a: '1',
+    fleet_token: 'abc d',
+    b: 'x=y',
+  });
+  assert.deepEqual(parseCookies(undefined), {});
+  assert.deepEqual(parseCookies(''), {});
+  assert.deepEqual(parseCookies('junk; =novalue; bare'), {});
+  // битый percent-encoding не роняет разбор, значение остаётся сырым
+  assert.deepEqual(parseCookies('fleet_token=%E0%A4%A'), { fleet_token: '%E0%A4%A' });
 });
 
 // --- boundedKey: счётчики не растут без предела ------------------------------------------

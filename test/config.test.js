@@ -25,6 +25,7 @@ test('пустое окружение даёт дефолты и ничего н
   assert.equal(config.webstormLauncher, null);
   assert.equal(config.webstormApp, 'WebStorm');
   assert.equal(config.channelEnabled, false);
+  assert.equal(config.token, '');
   assert.deepEqual(lines, []);
   assert.ok(Object.isFrozen(config), 'конфиг не меняется после старта');
 });
@@ -71,6 +72,11 @@ test('заданные значения проходят как есть', () =>
   assert.equal(config.transcriptsDir, '/tmp/transcripts');
   assert.equal(config.usageWindowMs, 2 * 60 * 60 * 1000);
   assert.equal(config.webstormApp, 'PhpStorm');
+});
+
+test('токен LAN читается как есть, пробелы вокруг не считаются токеном', () => {
+  assert.equal(load({ FLEET_TOKEN: 'abc' }).config.token, 'abc');
+  assert.equal(load({ FLEET_TOKEN: '   ' }).config.token, '', 'пусто = выключено');
 });
 
 test('канал включается только строкой 1', () => {

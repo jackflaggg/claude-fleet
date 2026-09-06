@@ -66,6 +66,65 @@ export function isCrossSite(headers, origins) {
   return typeof origin === 'string' && origin !== '' && !origins.has(origin);
 }
 
+/** Имя cookie с токеном доверия; её ставит вход по ссылке `/?token=<FLEET_TOKEN>`. */
+export const TOKEN_COOKIE = 'fleet_token';
+
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
+
+/**
+ * Разбор заголовка Cookie в плоский объект: пары через `;`, значение после первого `=`
+ * (в нём самом `=` допустим), percent-encoding снимается, битое оставляется сырым.
+ * Пары без имени или без `=` пропускаются. Без побочных эффектов.
+ *
+ * @param {string | undefined} header
+ * @returns {Record<string, string>}
+ */
+export function parseCookies(header) {
+  /** @type {Record<string, string>} */
+  const cookies = {};
+  if (typeof header !== 'string' || header === '') return cookies;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    if (!name) continue;
+    const raw = part.slice(eq + 1).trim();
+    let value = raw;
+    try {
+      value = decodeURIComponent(raw);
+    } catch {
+      // оставляем как есть: мусор в cookie не должен ронять запрос
+    }
+    cookies[name] = value;
+  }
+  return cookies;
+}
+
+/** Сравнение без ранней остановки: время ответа не выдаёт, сколько символов совпало. */
+function sameSecret(a, b) {
+  if (typeof a !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * Кому верим сверх проверок Host и Origin. Loopback всегда свой: борд на этой же машине,
+ * report.sh и процесс канала ходят оттуда и токена не знают. Токен не задан - поведение
+ * прежнее, доступ из сети решает FLEET_ALLOWED_HOSTS. Токен задан - запрос не с loopback
+ * доверен только с cookie `fleet_token=<token>`: иначе любой в LAN, узнавший адрес,
+ * читал бы /stream со всеми промптами. Адрес сокета неизвестен - считаем чужим.
+ *
+ * @param {string | undefined} remoteAddress адрес сокета (`req.socket.remoteAddress`)
+ * @param {Record<string, string>} cookies результат parseCookies
+ * @param {string} token FLEET_TOKEN, пустая строка = выключено
+ */
+export function isTrustedPeer(remoteAddress, cookies, token) {
+  if (!token) return true;
+  if (typeof remoteAddress === 'string' && LOOPBACK.has(remoteAddress)) return true;
+  return sameSecret(cookies?.[TOKEN_COOKIE], token);
+}
+
 /** Куда сваливаем всё, что не влезло в лимит числа ключей. */
 export const OTHER_KIND = 'прочие';
 /** Длиннее имя в ключ не пишем: строку-счётчик всё равно никто не прочитает целиком. */

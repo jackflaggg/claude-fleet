@@ -114,6 +114,8 @@ export interface Config {
   host: string;
   /** доп. значения заголовка Host через запятую (борд с планшета) */
   extraHosts: string;
+  /** FLEET_TOKEN: доверие запросам не с loopback по cookie; пустая строка = выключено */
+  token: string;
   stateFile: string;
   staleMs: number;
   blankMs: number;

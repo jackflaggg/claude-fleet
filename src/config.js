@@ -59,6 +59,8 @@ export function loadConfig(env, { log, exists, root, home = os.homedir() }) {
     host: text(env, 'FLEET_HOST', '127.0.0.1'),
     /** Доп. значения заголовка Host через запятую (борд с планшета); списки строит guards.js. */
     extraHosts: text(env, 'FLEET_ALLOWED_HOSTS', ''),
+    /** Токен доверия для запросов не с loopback (cookie через /?token=); пусто = выключено. */
+    token: text(env, 'FLEET_TOKEN', '').trim(),
     /** Персист настраиваемый ради тестов: они поднимают настоящий server.js и не должны затирать живой. */
     stateFile: text(env, 'FLEET_STATE_FILE', join(root, '.fleet-state.json')),
     staleMs: number('FLEET_STALE_HOURS', 6) * HOUR,
