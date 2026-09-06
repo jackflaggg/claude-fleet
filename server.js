@@ -28,6 +28,7 @@ import { isProcessAlive, pruneClosedSessions } from './src/fleet/liveness.js';
 import { AGENT, isAskingPermission } from './public/js/lib/domain.js';
 import { applyEnvFile, loadConfig } from './src/config.js';
 import { log } from './src/log.js';
+import { createSseHub } from './src/http/sse-hub.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
@@ -120,6 +121,11 @@ const BROADCAST_DEBOUNCE_MS = 50;
 const SSE_MAX_BUFFERED = 1024 * 1024;
 /** TCP keepalive на SSE-сокетах, чтобы мёртвый пир закрылся сам, а не висел в реестре. */
 const SSE_KEEPALIVE_MS = 30_000;
+const SSE_OPTIONS = { log, maxBuffered: SSE_MAX_BUFFERED, keepAliveMs: SSE_KEEPALIVE_MS, debounceMs: BROADCAST_DEBOUNCE_MS };
+/** Открытые борды: им уходит снимок состояния. Заголовки, heartbeat и уборка живут в хабе. */
+const boards = createSseHub(SSE_OPTIONS);
+/** Потоки команд к процессам канала: тот же хаб, но адресная запись, без рассылки снимка. */
+const channelStreams = createSseHub(SSE_OPTIONS);
 
 /**
  * Кто имеет право обращаться к борду. Списки и сами проверки живут в guards.js (чистое ядро
@@ -150,7 +156,6 @@ function loadState() {
 }
 
 let sessions = loadState();
-const sseClients = new Set();
 
 let closedSince = new Map();
 
@@ -208,7 +213,7 @@ function snapshot() {
 }
 
 /**
- * Канал ответа: pid процесса агента -> открытый SSE-ответ процессу канала. Ключ тот же,
+ * Канал ответа: pid процесса агента -> открытый SSE-поток к процессу канала (handle хаба). Ключ тот же,
  * что у карточки (`processPid`), так карточка и канал находят друг друга без общего id:
  * процесс канала знает только своего родителя (`process.ppid`), а hook-команда - своего.
  * В состоянии карточек этого нет намеренно: канал живёт ровно столько, сколько соединение.
@@ -232,38 +237,7 @@ function withChannel(card) {
 function sendChannelCommand(pid, command) {
   const channel = channels.get(pid);
   if (!channel) return false;
-  return writeSse(channel.res, `data: ${JSON.stringify(command)}\n\n`);
-}
-
-/**
- * Запись в SSE-поток с защитой от клиента, который перестал читать. Возврат `write` и буфер
- * `writableLength` раньше игнорировались, и мёртвый пир копил снимки в памяти без предела.
- * Разрушенный сокет прибирает его же обработчик 'close'.
- */
-function writeSse(res, data) {
-  if (res.writableLength > SSE_MAX_BUFFERED) {
-    log(`SSE-клиент не читает (${res.writableLength} байт в буфере), отключаю`);
-    res.destroy();
-    return false;
-  }
-  try {
-    res.write(data);
-    return true;
-  } catch {
-    res.destroy();
-    return false;
-  }
-}
-
-function openSse(req, res, comment) {
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  req.socket.setKeepAlive(true, SSE_KEEPALIVE_MS);
-  res.write(`: ${comment}\n\n`);
-  return setInterval(() => writeSse(res, ': ping\n\n'), 25_000);
+  return channelStreams.write(channel.handle, `data: ${JSON.stringify(command)}\n\n`);
 }
 
 /** Процесс канала держит этот поток открытым всю жизнь сессии; команды борда идут по нему. */
@@ -277,22 +251,20 @@ function handleChannelCommands(req, res, url) {
     res.writeHead(503).end('слишком много каналов');
     return;
   }
-  // Переподключение того же процесса: прежний поток закрываем, иначе команды уйдут в пустоту.
   const previous = channels.get(pid);
-  if (previous) {
-    try { previous.res.end(); } catch { /* уже закрыт */ }
-  }
-  const heartbeat = openSse(req, res, 'fleet channel');
-  channels.set(pid, { res, since: Date.now() });
-  const cleanup = () => {
-    clearInterval(heartbeat);
-    if (channels.get(pid)?.res !== res) return;
-    channels.delete(pid);
-    pendingPermissions.delete(pid);
-    broadcast();
-  };
-  req.on('close', cleanup);
-  res.on('error', cleanup);
+  const handle = channelStreams.open(req, res, 'fleet channel', {
+    onClose: () => {
+      // Прежний поток того же pid уже вытеснен: его закрытие реестр не трогает.
+      if (channels.get(pid)?.handle !== handle) return;
+      channels.delete(pid);
+      pendingPermissions.delete(pid);
+      broadcast();
+    },
+  });
+  channels.set(pid, { handle, since: Date.now() });
+  // Переподключение того же процесса: прежний поток закрываем, иначе команды уйдут в пустоту.
+  // Новый handle уже в реестре, поэтому onClose прежнего его не снимет.
+  if (previous) channelStreams.end(previous.handle);
   log(`канал подключён: pid ${pid}`);
   broadcast();
 }
@@ -444,7 +416,7 @@ function handleStats(res) {
     // и цену фонового опроса транскриптов иначе видно только профайлером.
     cpuSec: +((cpu.user + cpu.system) / 1e6).toFixed(1),
     sessions: Object.keys(sessions).length,
-    boards: sseClients.size,
+    boards: boards.size,
     channels: channels.size,
     usageFiles: transcriptOffsets.size,
     events: stats.events,
@@ -591,19 +563,9 @@ function payload() {
   return `data: ${JSON.stringify({ sessions: snapshot(), unknown, usage })}\n\n`;
 }
 
-let broadcastTimer = null;
-
-/** Снимок уходит бордам не сразу, а пачкой за BROADCAST_DEBOUNCE_MS: см. константу. */
+/** Снимок уходит бордам не сразу, а пачкой за BROADCAST_DEBOUNCE_MS: дебаунс живёт в хабе. */
 function broadcast() {
-  if (broadcastTimer) return;
-  broadcastTimer = setTimeout(flushBroadcast, BROADCAST_DEBOUNCE_MS);
-}
-
-function flushBroadcast() {
-  broadcastTimer = null;
-  if (!sseClients.size) return;
-  const data = payload();
-  for (const client of sseClients) writeSse(client, data);
+  boards.broadcast(payload);
 }
 
 async function readBody(req, limit = MAX_BODY) {
@@ -684,18 +646,10 @@ async function handleEvent(req, res) {
 function handleStream(req, res) {
   // Борд открыли после паузы: пока его никто не смотрел, транскрипты не читались,
   // и окно лимита успело уехать. Пересчитываем сразу, не дожидаясь тика опроса.
-  if (sseClients.size === 0) scanUsage();
-  if (sseClients.size === 0) scanLiveness();
-  const heartbeat = openSse(req, res, 'fleet');
-  res.write(payload());
-  sseClients.add(res);
-  const cleanup = () => {
-    clearInterval(heartbeat);
-    sseClients.delete(res);
-  };
-  req.on('close', cleanup);
-  // без обработчика 'error' сбой SSE-сокета всплыл бы как необработанное исключение процесса
-  res.on('error', cleanup);
+  if (boards.size === 0) scanUsage();
+  if (boards.size === 0) scanLiveness();
+  const handle = boards.open(req, res, 'fleet');
+  boards.write(handle, payload());
 }
 
 /** Папка открыта как проект IDE - по .idea рядом. Единственный IO в решении о фокусе. */
@@ -894,7 +848,7 @@ setInterval(() => {
 
 // Закрытые сессии убираем быстро; без открытого борда даже дешёвые проверки не нужны.
 setInterval(() => {
-  if (sseClients.size > 0) scanLiveness();
+  if (boards.size > 0) scanLiveness();
 }, LIVENESS_INTERVAL_MS).unref();
 
 /**
@@ -902,7 +856,7 @@ setInterval(() => {
  * транскрипты незачем: процесс должен стоять ровно на нуле, как и до этой фичи.
  */
 setInterval(() => {
-  if (sseClients.size > 0) scanUsage();
+  if (boards.size > 0) scanUsage();
 }, USAGE_POLL_MS).unref();
 
 // Без своего обработчика ошибка listen всплывает необработанным исключением, launchd

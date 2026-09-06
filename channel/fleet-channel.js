@@ -24,6 +24,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { applyEnvFile, loadConfig } from '../src/config.js';
 import { createLog } from '../src/log.js';
+import { createSseFrameParser } from '../src/http/sse-frames.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PID = process.ppid;
@@ -110,25 +111,17 @@ function connectCommands() {
       return;
     }
     reconnectDelay = RECONNECT_MIN_MS;
-    let buffer = '';
+    // Склейка кадров по границам чанков и потолок на кадр без разделителя живут в парсере.
+    const frames = createSseFrameParser();
     response.setEncoding('utf8');
     response.on('data', (chunk) => {
-      buffer += chunk;
-      let at;
-      while ((at = buffer.indexOf('\n\n')) >= 0) {
-        const frame = buffer.slice(0, at);
-        buffer = buffer.slice(at + 2);
-        const data = frame.split('\n').filter((line) => line.startsWith('data:'))
-          .map((line) => line.slice(5).trim()).join('\n');
-        if (!data) continue;
+      for (const data of frames.push(chunk)) {
         try {
           handleCommand(JSON.parse(data)).catch((error) => log(`команда не ушла в сессию: ${error.message}`));
         } catch {
           // мусор во фрейме: пропускаем, поток живёт дальше
         }
       }
-      // защита от бесконечного кадра без разделителя
-      if (buffer.length > 64 * 1024) buffer = '';
     });
     response.on('end', () => scheduleReconnect('поток команд закрыт'));
     response.on('error', (error) => scheduleReconnect(error.message));
