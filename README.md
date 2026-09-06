@@ -1,202 +1,190 @@
 # claude-fleet
 
-Локальный дашборд, который в одном окне показывает все твои сессии Claude Code и Codex:
-чем каждая занята и какая ждёт твоего вмешательства. Живёт целиком на маке,
-ничего не шлёт в сеть. Состояние держится в памяти и локально кэшируется на диск,
-чтобы рестарт сервиса не терял живые карточки - но с машины ничего не уходит.
+One local dashboard for every running Claude Code and Codex session: what each one is doing
+and which one is waiting for you. Runs entirely on your Mac, sends nothing to the network.
 
-Задача - убрать поллинг: не переключаться по вкладкам терминала «готово или нет»,
-а видеть статус всех сессий сразу и получать пинок, когда сессия встала.
+The problem it solves is polling. With several agent sessions open you keep cycling through
+terminal tabs asking "done yet?". Fleet shows all of them at once and nudges you the moment
+one stops and needs a decision.
 
-## Как это устроено
+![Fleet board](docs/board.png)
+
+*Board UI labels are currently in Russian; an English locale is on the list.*
+
+## How it works
 
 ```
 Claude Code ─┐
-             ├──(lifecycle hook)──> hooks/report.sh ──POST──> server.js ──SSE──> браузер
+             ├──(lifecycle hook)──> hooks/report.sh ──POST──> server.js ──SSE──> browser
 Codex ───────┘
 
-клик по карточке ──POST /focus──> server.js ──> webstorm <cwd>  (фокус окна проекта)
+click on a card ──POST /focus──> server.js ──> webstorm <cwd>   (focuses the project window)
 ```
 
-- **Хуки** Claude Code (`~/.claude/settings.json`) и Codex (`~/.codex/hooks.json`) на события сессии
-  дёргают `hooks/report.sh`, который просто пробрасывает JSON события в локальный сервер.
-  Хуки пассивные: твой обычный процесс работы в WebStorm не меняется вообще.
-- **server.js** держит состояние всех сессий в памяти и по SSE рисует борд в браузере.
-- **public/** - клиент борда: HTML-каркас, отдельные стили и ES-модули по слоям. Клик по
-  карточке фокусит WebStorm на нужный проект.
+- **Hooks.** Claude Code (`~/.claude/settings.json`) and Codex (`~/.codex/hooks.json`) lifecycle
+  hooks call `hooks/report.sh`, which forwards the event JSON to the local server. Hooks are
+  passive: your normal workflow in the IDE does not change.
+- **server.js** keeps all sessions in memory and streams the board over SSE. Plain `node:http`,
+  zero npm dependencies, Node 22.
+- **public/** is the client: semantic HTML, one stylesheet, ES modules split by layer.
 
-## Статусы карточки
+## Card statuses
 
-Выводятся приблизительно из lifecycle-события обоих агентов:
+Derived from lifecycle events of both agents:
 
-| Статус | Когда | Цвет |
-|--------|-------|------|
-| `готов` | сессия только стартовала (`SessionStart`) | серый |
-| `думает` | ты отправил промпт (`UserPromptSubmit`) | синий |
-| `работает` | идёт вызов инструмента или он отработал (`PreToolUse` / `PostToolUse`) | синий |
-| `сжимает контекст` | сессия уплотняет историю (`PreCompact`) | синий |
-| `ошибка` | инструмент вернул ошибку (best-effort) | оранжевый |
-| `закончил ход` | `Stop`: сессия стоит без промпта, помощи не просит | нейтральный |
-| **ждёт тебя** | `Notification`/`PermissionRequest` (разрешение), вопрос, сбой API | красный |
+| Status | When | Colour |
+|--------|------|--------|
+| ready | session just started (`SessionStart`) | grey |
+| thinking | you sent a prompt (`UserPromptSubmit`) | blue |
+| working | a tool is running or just finished (`PreToolUse` / `PostToolUse`) | blue |
+| compacting | history is being compacted (`PreCompact`) | blue |
+| error | a tool returned an error (best effort) | orange |
+| finished turn | `Stop`: idle, no prompt, not asking for anything | neutral |
+| **needs you** | `Notification` / `PermissionRequest`, a question, an API failure | red |
 
-Красные карточки собираются в секцию «Ждут тебя» наверху - это то, ради чего борд и нужен.
-Дольше всех ждущая идёт первой, а крупный таймер справа показывает, сколько она уже висит.
-Закончившие ход стоят отдельной нейтральной секцией под ней: видно, кто простаивает и сколько,
-но в счётчик на иконке и в уведомления они не попадают - красное значит только «нужен ты».
+Red cards are collected in a "waiting for you" section at the top. The longest-waiting one goes
+first, with a large timer showing how long it has been sitting there. A red card shows not only
+"waiting for permission" but what exactly: the notification text plus the tool and its target,
+for example `Bash · git push --force origin master`, so the decision can be made from the board.
 
-Красная карточка показывает не только «ждёт разрешения», но и на что именно: текст
-уведомления Claude плюс сам инструмент с целью - `Bash · git push --force origin master`.
-Так решение принимается прямо с борда, без похода в терминал.
+Sessions that finished their turn get a neutral section of their own: you see who is idle and
+for how long, but they never count toward the badge or notifications. Red means "you are needed".
 
-## Как выглядит
+## What's on the board
 
-- **Рейл под шапкой** - одна ось времени на последние шесть часов: засечки стартов сессий
-  в цвете проекта, красные засечки входа в ожидание, латунная полоса окна лимита с меткой
-  сброса и маркер «сейчас».
-- **Ждут тебя** - красные карточки: что именно ждут, на какой инструмент спрашивают,
-  последняя задача, таймер ожидания крупно.
-- **Закончили ход** - такие же карточки без красного: последняя задача и сколько сессия
-  простаивает без нового промпта.
-- **В работе** - плотные строки одной таблицей: монограмма и имя проекта (у следующих
-  сессий того же проекта только уголок продолжения), задача, текущий инструмент, искра
-  активности за последние десять минут, статус, возраст, агент и терминал. Пока промпта
-  не было, вместо задачи стоит «новая сессия, промпта ещё нет».
+- **Rail** under the header: one six-hour timeline with session start ticks in project colour,
+  red ticks for "entered waiting", a brass bar for the current usage window with its reset time,
+  and a "now" marker.
+- **Waiting for you**: red cards with the reason, the tool being asked about, the last task and
+  a big wait timer.
+- **Finished turn**: same cards without red, showing idle time.
+- **Working**: dense rows in one table: project monogram, task, current tool, a 10-minute
+  activity sparkline, status, age, agent and terminal.
 
-Шрифты лежат в репозитории, борд не ходит за ними в интернет.
+Fonts ship with the repo, the board never fetches anything from the internet.
 
-## Убрать карточку
+## Closed sessions disappear on their own
 
-Закрытая сессия исчезает с борда сама примерно за 10–20 секунд, и Claude Code, и Codex: Fleet
-получает PID процесса агента с hook-событием и проверяет его существование только при открытом
-борде, без опроса диска и запуска фоновых утилит. Для аварийных случаев (карточка из старого
-кэша без PID, процесс завис, но жив) остаётся кнопка × в углу карточки (появляется при
-наведении): без PID резервная уборка сработает через 6 часов.
+A closed session leaves the board in 10-20 seconds, for both Claude Code and Codex. The agent
+process PID arrives with each hook event and is checked with `kill(pid, 0)` only while the
+board is open, no disk polling, no background utilities. Removal requires two consecutive
+misses so a brief reconnect never drops a live card. For edge cases (a cached card without PID,
+a hung but alive process) there is a × button on hover; without a PID the fallback cleanup
+runs after 6 hours.
 
-## Запуск
+## Run
 
 ```bash
 node server.js
-# claude-fleet слушает http://localhost:4319
+# claude-fleet listens on http://localhost:4319
 ```
 
-Порт по умолчанию `4319`, меняется через `FLEET_PORT`.
+Default port is `4319`, override with `FLEET_PORT`.
 
-Открывать борд удобнее отдельным окном-приложением, без вкладок и адресной строки:
-
-```bash
-./scripts/board.sh
-```
-
-Скрипт поднимает окно Яндекс Браузера в app-режиме. Такое окно живёт само по себе на втором
-мониторе и не теряется среди вкладок, а красный бейдж со счётчиком видно на его иконке в доке.
-Второе окно поверх уже открытого борда он не поднимает - для этого есть `--force`.
-
-После `./scripts/install.sh` борд открывается сам при входе в систему. Не нужно - поставь
-`FLEET_AUTOOPEN=0` в `.env` и прогони установку заново.
-
-## Борд слушает только localhost
-
-Сервер биндится на `127.0.0.1` и вдобавок проверяет заголовок `Host`. Без этой проверки
-открытая в браузере страница может через DNS rebinding притвориться localhost и вычитать
-`/stream`, а там лежат тексты твоих промптов, пути проектов и команды. Если нужно смотреть
-борд с другого устройства - добавь его хост в `FLEET_ALLOWED_HOSTS` в `.env`.
-
-Чтобы поднимался сам при логине и хуки заработали глобально:
+To install hooks globally and start the server at login:
 
 ```bash
 ./scripts/install.sh
 ```
 
-Скрипт создаёт `.env`, дописывает хуки в `~/.claude/settings.json` и `~/.codex/hooks.json`
-(чужие не трогает, перед записью делает бэкап) и ставит launchd-агент. Запускать повторно
-можно - он идемпотентный. Codex попросит один раз проверить новые команды: открой `/hooks`
-в Codex, просмотри записи Fleet и доверь их. Это штатная защита Codex для пользовательских
-command hooks. Подробности
-и ручной вариант - в [install.md](./install.md), снять всё - `./scripts/uninstall.sh`.
+The script creates `.env`, merges the hooks into `~/.claude/settings.json` and
+`~/.codex/hooks.json` (foreign hooks are preserved, a backup is taken first) and installs a
+launchd agent. It is idempotent. Codex will ask once to trust the new command hooks via
+`/hooks`. Details and the manual path are in [install.md](./install.md), removal is
+`./scripts/uninstall.sh`.
 
-## Сколько осталось до сброса лимита
+`./scripts/board.sh` opens the board as a standalone app window (no tabs, no address bar) that
+lives on a second monitor and shows the red counter badge on its dock icon.
 
-На рейле под шапкой окно лимита это латунная полоса с подписями «окно лимита с 14:30» и
-«сброс в 19:30 · через **2 ч 05 мин**». Лимит привязан к аккаунту, а не к проекту - все сессии
-во всех папках жгут одну квоту, поэтому полоса одна на весь борд, и на той же оси видно, какие
-сессии стартовали внутри этого окна. Когда пятичасовое окно истекло, там написано «лимит Claude
-свежий»: счётчик пойдёт заново с твоего следующего запроса.
+## Localhost only, and `Host` is verified
 
-Считается по локальным файлам сессий (`~/.claude/projects`), наружу ничего не уходит. Сессии,
-которые ты вёл в браузере или с телефона, борд не видит - на границу окна это почти не влияет,
-но знать полезно. Сверить в любой момент можно командой `/usage` в самом Claude Code: время
-сброса должно совпадать до минуты.
+The server binds to `127.0.0.1` and additionally validates the `Host` header. Without that
+check a page in your browser could use DNS rebinding to pose as localhost and read `/stream`,
+which carries your prompts, project paths and shell commands. Mutating requests from a foreign
+origin are rejected by `Sec-Fetch-Site` / `Origin`. To view the board from another device add
+its host to `FLEET_ALLOWED_HOSTS` in `.env`.
 
-## Звука нет никогда, уведомления по желанию
+## Usage window
 
-Основной сигнал это сам борд: красная секция «ждут тебя» сверху, красный акцент на карточке,
-бейдж со счётчиком на favicon фоновой вкладки. Ничего не бибикает.
+The rail shows the current 5-hour limit window as a brass bar: "window since 14:30" and
+"resets at 19:30 · in 2 h 05 min". The limit belongs to the account, not the project, so the
+bar is one per board. It is computed from local transcripts in `~/.claude/projects` (read
+only, nothing leaves the machine) and matches `/usage` in Claude Code to the minute.
 
-Если борда не видно (например, работаешь в фуллскрине IDE), можно включить системные
-уведомления колокольчиком в шапке. По умолчанию они выключены. Даже включённые:
+## Silent by design, notifications opt-in
 
-- всегда беззвучные (`silent`)
-- только про **новые** ожидающие сессии, а не про каждое обновление
-- заменяют друг друга, а не копятся стопкой в центре уведомлений
-- по клику ведут прямо к нужной сессии
+The board itself is the signal: the red section, the red card accent, the counter badge on the
+favicon of a background tab. Nothing beeps. System notifications can be enabled with the bell
+in the header for the case when the board is not visible (full-screen IDE). Even then they are
+always silent, fire only for new waiting sessions, replace each other instead of stacking, and
+click through to the session.
 
-## Что внутри происходит
+## Click on a card
 
-`http://localhost:4319/stats` отдаёт диагностику: аптайм, память, число сессий и открытых
-бордов, а также размеры событий по типам. Полезно, если борд начал вести себя странно.
+Returns you to where the session actually lives, using the terminal bundle id sent by the hook:
+a WebStorm terminal in a real project (has `.idea`) focuses the project window through the CLI
+launcher (`webstorm <cwd>`); any other terminal (Alacritty, iTerm, Terminal) is simply brought to
+front. JetBrains has no public API for focusing a specific terminal tab, so that last step is
+yours.
 
-## Клик по карточке
+## Answering from the board (prototype)
 
-Возвращает туда, где сессия реально живёт, когда агент передал bundle-id терминала:
-- если это реальный проект (есть `.idea`) и сессия в терминале WebStorm - фокусит окно
-  проекта через CLI-лаунчер (`webstorm <cwd>`). Именно лаунчер переключает на нужный проект,
-  `open -a WebStorm` так не умеет (поднимает последнее активное окно).
-- если сессия в другом терминале (Alacritty / iTerm / Terminal, например `claude` из home) -
-  просто выводит вперёд это приложение (`open -b <bundle-id>`). Home как проект не открывается.
+Behind `FLEET_CHANNEL=1` there is a prototype that lets you allow or deny a permission request
+and send a reply to a Claude Code session directly from the card. It runs as a stdio MCP server
+that Claude Code starts per session (channel research preview) and talks to the board over SSE.
+See [install.md](./install.md), "Answering from the board". Without the flag the board is
+read-only.
 
-Если приложение сессии определить нельзя, но в `cwd` есть `.idea`, Fleet открывает нужный
-проект. До **конкретного терминал-таба** внутри проекта не проваливает: у JetBrains нет для этого
-публичного API, таб дожимаешь сам.
-
-## Тесты
+## Tests
 
 ```bash
 node --test
 npm run verify:liveness
 ```
 
-Первой командой покрыты чистые ядра статусов, фокуса, ограничителей, лимита, liveness по PID
-и форматтеры борда.
-Вторая прогоняет миллион PID-проверок и миллион циклов открытия/закрытия, принудительно
-собирает мусор и проверяет бюджеты CPU, плато heap/RSS и нулевой размер внутреннего `Map`.
+The first command covers the pure cores: statuses, focus resolution, request guards, usage
+window, PID liveness and board formatters. The second runs a million PID checks and a million
+open/close cycles, forces GC and asserts CPU budgets, heap/RSS plateau and an empty internal
+`Map` afterwards.
 
-## Сколько ест
+## Footprint
 
-Замерено под нагрузкой: 60 МБ на старте, ~70 МБ в реальной работе, дальше плато - 40 000
-событий и 300 переподключений борда роста не дают. Под искусственным штормом (12 тыс.
-событий в секунду) heap разово раздувается примерно до 105 МБ и там же держится.
+Measured under load: 60 MB at start, ~70 MB in real use, then a plateau. 40,000 events and
+300 board reconnects add no growth. Under a synthetic storm of 12,000 events/s the heap
+peaks at about 105 MB and stays there.
 
-Хук на каждый вызов инструмента стоит ~13 мс: он не форкает подпроцессы, кроме самого curl,
-и при незапущенном сервере мгновенно упирается в отказ соединения. Для Codex используется
-тот же событийный путь: Fleet не опрашивает `~/.codex/sessions`, не держит дополнительные
-буферы транскриптов и в простое не добавляет CPU, IO или RAM. При открытом борде PID живых
-сессий проверяется системным signal 0 раз в 10 секунд: замер миллиона проверок даёт
-около 200 нс на одну. Это также не зависит от
-нестабильного внутреннего формата rollout JSONL - используется официальный интерфейс
-[Codex lifecycle hooks](https://learn.chatgpt.com/docs/hooks).
+Each hook call costs ~13 ms: it forks nothing except `curl` itself and fails instantly when the
+server is down. Codex uses the same event path through the official
+[Codex lifecycle hooks](https://learn.chatgpt.com/docs/hooks), so Fleet never polls
+`~/.codex/sessions`. With the board open, PIDs are checked every 10 s at roughly 200 ns each.
 
-## Ограничения v1 (осознанно не сделано)
+`http://localhost:4319/stats` returns diagnostics: uptime, memory, session and board counts,
+event sizes by type.
 
-- Отвечать агенту прямо из борда штатно - нет, отвечаешь в Claude Code или Codex. Есть
-  прототип для Claude Code за флагом `FLEET_CHANNEL=1` (см. [install.md](./install.md),
-  «Ответ с борда»): кнопки «Разрешить»/«Отказать» и строка ответа на карточке.
-- Истории завершённых сессий нет, борд показывает только живые.
-- Автопереход в конкретный терминал-таб - нет (ограничение JetBrains, см. выше).
-- Другие CLI-агенты кроме Claude Code и Codex не отслеживаются.
+## Configuration (`.env`)
 
-## Лицензия
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `FLEET_PORT` | `4319` | server port, also read by `report.sh` |
+| `FLEET_HOST` | `127.0.0.1` | bind address |
+| `FLEET_ALLOWED_HOSTS` | empty | extra `Host` values, comma-separated |
+| `FLEET_STALE_HOURS` | `6` | idle threshold for fallback cleanup |
+| `FLEET_BLANK_MINUTES` | `15` | threshold for a card with no task and no tool |
+| `FLEET_TRANSCRIPTS` | `~/.claude/projects` | transcripts folder for the usage window |
+| `FLEET_USAGE_HOURS` | `5` | length of the limit window |
+| `FLEET_WEBSTORM` | `/usr/local/bin/webstorm` | path to the WebStorm CLI launcher |
+| `FLEET_AUTOOPEN` | `1` | open the board at login (read by `install.sh`) |
+| `FLEET_CHANNEL` | `0` | enable the answer-from-board prototype |
 
-[MIT](LICENSE). Copyright (c) 2026 Хамзин Расул Маратович
+## Known limitations (v1, on purpose)
 
-Бери, меняй, используй в чём угодно, включая коммерческое. Единственное требование -
-сохранять текст лицензии и копирайт. Гарантий никаких, ответственности автор не несёт.
+- No history of finished sessions, the board shows live ones only.
+- No jump to a specific terminal tab inside a project (JetBrains limitation).
+- Only Claude Code and Codex are tracked.
+- Board UI is in Russian for now.
+
+Russian version of this document: [README.ru.md](./README.ru.md).
+
+## License
+
+[MIT](LICENSE). Copyright (c) 2026 Rasul Khamzin.
