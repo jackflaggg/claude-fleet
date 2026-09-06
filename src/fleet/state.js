@@ -4,10 +4,12 @@
  *
  * Одна карточка = одна сессия Claude Code (ключ - session_id).
  * Статус выводится приблизительно из типа события, точной телеметрии у хуков нет.
+ * Сырую схему хука знает только `hook-event.js`: сюда приходит нормализованный `FleetEvent`.
  */
 
 import { bumpActivity } from '../../public/js/lib/activity.js';
 import { AGENT, STATUS, WAIT_REASON } from '../../public/js/lib/domain.js';
+import { normalizeHookEvent } from './hook-event.js';
 
 /**
  * События хука, которые борд понимает. Схема событий Claude Code не наша и может измениться
@@ -186,14 +188,6 @@ function toolTarget(name, input) {
   }
 }
 
-function isToolError(toolResponse) {
-  return Boolean(
-    toolResponse &&
-      typeof toolResponse === 'object' &&
-      (toolResponse.error || toolResponse.is_error || toolResponse.isError),
-  );
-}
-
 /**
  * Тип уведомления Claude Code присылает отдельным полем notification_type. Оно точнее
  * текста: формулировка message меняется между версиями, а разбор по подстроке "permission"
@@ -225,15 +219,11 @@ const INFO_NOTIFICATIONS = new Set([
   'agent_completed',
 ]);
 
-function notificationKind(event) {
-  return typeof event.notification_type === 'string' ? event.notification_type : '';
-}
-
 function waitReasonFromNotification(event) {
-  const known = NOTIFICATION_REASON[notificationKind(event)];
+  const known = NOTIFICATION_REASON[event.notification];
   if (known) return known;
   // Фолбэк для версий без notification_type: различаем причину по тексту уведомления.
-  const message = typeof event.message === 'string' ? event.message.toLowerCase() : '';
+  const message = event.message?.toLowerCase() ?? '';
   const isPermission =
     message.includes('permission') ||
     message.includes('approve') ||
@@ -242,21 +232,33 @@ function waitReasonFromNotification(event) {
   return isPermission ? WAIT_REASON.PERMISSION : WAIT_REASON.QUESTION;
 }
 
+/** Инструмент и «над чем сейчас» на карточке из события с инструментом. */
+function noteTool(card, event) {
+  if (!event.tool) return;
+  card.tool = event.tool;
+  card.toolInfo = toolTarget(event.tool, event.toolInput);
+}
+
+/** Сырое событие хука плюс заголовки репортёра: нормализация и применение одним вызовом. */
+export function applyRawEvent(sessions, raw, now, headers = {}) {
+  return applyEvent(sessions, normalizeHookEvent(raw, headers), now);
+}
+
 /**
  * Применяет одно событие хука к текущему набору сессий и возвращает новый набор
- * (иммутабельно). Малформленные события (без session_id / hook_event_name) игнорирует.
+ * (иммутабельно). Малформленные события (без sessionId / kind) игнорирует.
  *
  * @param {Record<string, object>} sessions текущее состояние
- * @param {object} event распарсенный JSON события хука
+ * @param {import('./hook-event.js').FleetEvent} event нормализованное событие
  * @param {number} now метка времени в мс (передаётся снаружи ради чистоты функции)
  * @returns {Record<string, object>} новый набор сессий
  */
 export function applyEvent(sessions, event, now) {
   const next = { ...sessions };
-  const sourceId = event?.session_id;
-  const eventName = event?.hook_event_name;
+  const sourceId = event.sessionId;
+  const eventName = event.kind;
   if (!sourceId || !eventName) return next;
-  const agent = event?.agent === AGENT.CODEX ? AGENT.CODEX : AGENT.CLAUDE;
+  const { agent } = event;
   // Пространства id разделены явно: схема обоих агентов использует session_id, и хотя UUID
   // почти наверняка не столкнутся, карточка и DELETE/focus не должны зависеть от «почти».
   const id = agent === AGENT.CODEX ? `${AGENT.CODEX}:${sourceId}` : sourceId;
@@ -273,7 +275,7 @@ export function applyEvent(sessions, event, now) {
     agent,
     project: place.project,
     worktree: place.worktree,
-    cwd: typeof event.cwd === 'string' ? event.cwd : '',
+    cwd: event.cwd,
     appId: null,
     terminal: null,
     processPid: null,
@@ -290,21 +292,19 @@ export function applyEvent(sessions, event, now) {
   };
 
   const card = { ...previous, updatedAt: now };
-  if (typeof event.cwd === 'string' && event.cwd) {
+  if (event.cwd) {
     card.cwd = event.cwd;
     card.project = place.project;
     card.worktree = place.worktree;
   }
   // bundle-id приложения-терминала, где живёт сессия (для клика + метки на карточке).
-  if (typeof event.appId === 'string' && event.appId) {
+  if (event.appId) {
     card.appId = event.appId;
     card.terminal = terminalName(event.appId);
   }
-  // PID процесса агента ($PPID hook-команды, проверено выборкой ps: у Claude это сам процесс
+  // PID процесса агента ($PPID hook-команды, проверено по ps: у Claude это сам процесс
   // claude). По нему сервер снимает карточку закрытой сессии и привязывает канал ответа.
-  if (Number.isSafeInteger(event.processPid) && event.processPid > 1) {
-    card.processPid = event.processPid;
-  }
+  if (event.pid) card.processPid = event.pid;
   Object.assign(card, bumpActivity(previous.activity, previous.activityMinute, now));
 
   switch (eventName) {
@@ -321,53 +321,38 @@ export function applyEvent(sessions, event, now) {
       card.toolInfo = null;
       card.reason = null;
       card.note = null;
-      {
-        const prompt = event.prompt ?? event.user_prompt;
-        // Служебную инъекцию не пишем в заголовок - сохраняем прошлую реальную задачу.
-        if (typeof prompt === 'string' && prompt.trim() && !isServicePrompt(prompt)) {
-          card.title = clip(unwrapPrompt(prompt)) || card.title;
-        }
+      // Служебную инъекцию не пишем в заголовок - сохраняем прошлую реальную задачу.
+      if (event.prompt?.trim() && !isServicePrompt(event.prompt)) {
+        card.title = clip(unwrapPrompt(event.prompt)) || card.title;
       }
       break;
     case 'PreToolUse':
       card.status = STATUS.TOOL;
       card.reason = null;
       card.note = null;
-      if (typeof event.tool_name === 'string') {
-        card.tool = event.tool_name;
-        card.toolInfo = toolTarget(event.tool_name, event.tool_input);
-      }
+      noteTool(card, event);
       break;
     case 'PermissionRequest':
       card.status = STATUS.WAITING;
       card.reason = WAIT_REASON.PERMISSION;
-      card.note = clip(event.tool_input?.description, MAX_NOTE) || null;
-      if (typeof event.tool_name === 'string') {
-        card.tool = event.tool_name;
-        card.toolInfo = toolTarget(event.tool_name, event.tool_input);
-      }
+      card.note = clip(event.toolInput?.description, MAX_NOTE) || null;
+      noteTool(card, event);
       break;
     case 'PostToolUse':
-      card.status = isToolError(event.tool_response) ? STATUS.ERROR : STATUS.WORKING;
+      card.status = event.isError ? STATUS.ERROR : STATUS.WORKING;
       card.reason = null;
       card.note = null;
-      if (typeof event.tool_name === 'string') {
-        card.tool = event.tool_name;
-        card.toolInfo = toolTarget(event.tool_name, event.tool_input);
-      }
+      noteTool(card, event);
       break;
     // Выделенное событие ошибки инструмента: точнее, чем нюхать tool_response вслепую.
     case 'PostToolUseFailure':
       card.status = STATUS.ERROR;
       card.reason = null;
       card.note = null;
-      if (typeof event.tool_name === 'string') {
-        card.tool = event.tool_name;
-        card.toolInfo = toolTarget(event.tool_name, event.tool_input);
-      }
+      noteTool(card, event);
       break;
     case 'Notification': {
-      const kind = notificationKind(event);
+      const kind = event.notification;
       // Информационное уведомление - не повод звать человека к сессии.
       if (INFO_NOTIFICATIONS.has(kind)) break;
       // idle_prompt значит "ты давно не отвечал", а не новую причину ожидания. Оно прилетает
@@ -395,7 +380,7 @@ export function applyEvent(sessions, event, now) {
       card.reason = WAIT_REASON.FAILED;
       card.tool = null;
       card.toolInfo = null;
-      card.note = clip(event.message ?? event.error, MAX_NOTE) || null;
+      card.note = clip(event.message, MAX_NOTE) || null;
       break;
     // Компакция контекста идёт без единого события инструмента: карточка замирала на
     // последнем туле и уходила в "нет активности", хотя сессия жива и занята делом.

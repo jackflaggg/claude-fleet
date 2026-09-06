@@ -25,13 +25,13 @@ import { existsSync } from 'node:fs';
 import { spawn as spawnProcess } from 'node:child_process';
 import { extname, join, resolve, sep } from 'node:path';
 import { applyEvent, pruneStale, isHandledEvent } from './fleet/state.js';
+import { normalizeHookEvent } from './fleet/hook-event.js';
 import { createSessionStore } from './fleet/store.js';
 import { resolveFocus } from './focus/focus.js';
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './http/guards.js';
 import { describeWindow } from './usage/usage.js';
 import { createUsageScanner } from './usage/scanner.js';
 import { isProcessAlive, pruneClosedSessions } from './fleet/liveness.js';
-import { AGENT } from '../public/js/lib/domain.js';
 import { createSseHub } from './http/sse-hub.js';
 import { MAX_BODY, readBody } from './http/body.js';
 import { createChannelRegistry } from './channel/registry.js';
@@ -308,26 +308,18 @@ export function createFleet({
     }
     if (!res.writableEnded) res.writeHead(204).end();
 
-    let event;
+    let parsed;
     try {
-      event = JSON.parse(raw);
+      parsed = JSON.parse(raw);
     } catch {
       return;
     }
 
-    // bundle-id терминала сессии приходит отдельным заголовком (report.sh не трогает тело).
-    const appHeader = req.headers['x-fleet-app'];
-    if (typeof appHeader === 'string' && appHeader) event.appId = appHeader;
-    // Тело hook-события у Claude и Codex почти одинаковое. Источник задаёт наш репортёр
-    // отдельным заголовком, чтобы не переписывать/не буферизовать JSON на горячем пути.
-    const agentHeader = req.headers['x-fleet-agent'];
-    if (agentHeader === AGENT.CODEX) event.agent = AGENT.CODEX;
-    const pidHeader = Number(req.headers['x-fleet-pid']);
-    if (Number.isSafeInteger(pidHeader) && pidHeader > 1) event.processPid = pidHeader;
-
-    if (event?.hook_event_name) {
-      noteEventSize(event.hook_event_name, raw.length);
-      if (!isHandledEvent(event.hook_event_name)) noteUnknownEvent(event.hook_event_name);
+    // Схема хука и заголовки репортёра известны только hook-event.js.
+    const event = normalizeHookEvent(parsed, req.headers);
+    if (event.kind) {
+      noteEventSize(event.kind, raw.length);
+      if (!isHandledEvent(event.kind)) noteUnknownEvent(event.kind);
     }
 
     const now = clock();

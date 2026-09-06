@@ -1,12 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, pruneStale, isHandledEvent, shiftActivity, ACTIVITY_BARS } from '../src/fleet/state.js';
+import { applyRawEvent, pruneStale, isHandledEvent, shiftActivity, ACTIVITY_BARS } from '../src/fleet/state.js';
 import { STATUS, WAIT_REASON } from '../public/js/lib/domain.js';
 
 const NOW = 1_700_000_000_000;
 
 function ev(overrides) {
   return { session_id: 's1', cwd: '/Users/x/Projects/school-back', ...overrides };
+}
+
+/**
+ * Короткая запись тестов: agent, appId и processPid лежат в событии рядом с полями хука.
+ * В жизни они приходят заголовками report.sh, поэтому здесь переезжают в заголовки.
+ */
+function applyEvent(sessions, raw, now) {
+  const { agent, appId, processPid, ...event } = raw;
+  const headers = {};
+  if (agent) headers['x-fleet-agent'] = agent;
+  if (appId) headers['x-fleet-app'] = appId;
+  if (processPid != null) headers['x-fleet-pid'] = String(processPid);
+  return applyRawEvent(sessions, event, now, headers);
 }
 
 test('SessionStart создаёт карточку с проектом из cwd', () => {
