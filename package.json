@@ -8,8 +8,13 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
+    "typecheck": "tsc -p tsconfig.json",
     "verify:liveness": "node --expose-gc scripts/verify-liveness.mjs",
     "setup": "./scripts/install.sh",
     "board": "./scripts/board.sh"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
   }
 }

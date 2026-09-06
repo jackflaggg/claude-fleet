@@ -8,6 +8,9 @@ import { ACTIVITY_BARS } from '../lib/activity.js';
 import { SECTION, STATUS, WAIT_REASON, agentOf, sectionOf } from '../lib/domain.js';
 import { ageText, escapeHtml, projectMark, timerText } from '../lib/format.js';
 
+/** @import { Card } from '../../../types.js' */
+
+/** @param {string} name имя проекта */
 export function avatarHtml(name) {
   const mark = projectMark(name);
   const style = `--av-fg:hsl(${mark.hue} 62% 70%);--av-bg:hsl(${mark.hue} 55% 60% / .16);--av-br:hsl(${mark.hue} 55% 62% / .34)`;
@@ -36,7 +39,8 @@ export function toolHtml(c) {
 }
 
 /** Поля, от которых зависит разметка: совпала сигнатура - innerHTML не трогаем.
-    Разделитель нужен, иначе «ab»+«c» и «a»+«bc» в соседних полях дали бы одну сигнатуру. */
+    Разделитель нужен, иначе «ab»+«c» и «a»+«bc» в соседних полях дали бы одну сигнатуру.
+    @param {Card} c */
 export function cardSig(c) {
   return [
     c.agent, c.status, c.reason, c.title, c.note, c.tool, c.toolInfo, c.terminal, c.project,
@@ -73,7 +77,8 @@ export function killHtml(c) {
 /* Карточка ожидания. Главная цифра - сколько она уже ждёт, крупно справа как задержка
    на табло. Текст уведомления объясняет, ЧЕГО ждут; при разрешении рядом стоит тул,
    на который спрашивают, и решение принимается не вставая. У закончившей ход карточки
-   та же форма, но без красного и без дыхания: она не зовёт, а просто стоит без промпта. */
+   та же форма, но без красного и без дыхания: она не зовёт, а просто стоит без промпта.
+   @param {Card} c @param {number} [now] */
 export function cardHtml(c, now = Date.now()) {
   const b = badgeFor(c);
   const done = sectionOf(c) === SECTION.DONE;
@@ -93,7 +98,8 @@ export function cardHtml(c, now = Date.now()) {
 }
 
 /* Строка секции «в работе»: ячейки берут колонки общей таблицы через subgrid, поэтому
-   статусы читаются столбцом. Пустые ячейки всё равно выводим - без них сетка съезжает. */
+   статусы читаются столбцом. Пустые ячейки всё равно выводим - без них сетка съезжает.
+   @param {Card} c @param {number} [now] */
 export function rowHtml(c, now = Date.now()) {
   const b = badgeFor(c);
   const task = c.title ? escapeHtml(c.title) : '<span class="none">новая сессия, промпта ещё нет</span>';

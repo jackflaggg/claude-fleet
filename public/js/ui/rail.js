@@ -12,13 +12,20 @@ const HOUR_MS = 60 * 60 * 1000;
 /* маркер «сейчас» не прижимается к правому краю: под подпись нужен зазор */
 const EDGE_MS = 20 * 60 * 1000;
 
+/** @import { Card, Snapshot, UsageWindow } from '../../../types.js' */
+
 export function createRail() {
-  const rail = document.getElementById('rail');
-  const axis = document.getElementById('axis');
+  const rail = /** @type {HTMLElement} */ (document.getElementById('rail'));
+  const axis = /** @type {HTMLElement} */ (document.getElementById('axis'));
+  /** @type {{ sessions: Card[], usage: UsageWindow | null }} */
   let model = { sessions: [], usage: null };
+  /** @type {number | null} */
   let paintedLeft = null;
+  /** @type {string | null} */
   let paintedSig = null;
+  /** @type {HTMLElement | null} */
   let nowEl = null;
+  /** @type {HTMLElement | null} */
   let winEl = null;
 
   /* Из снимка рейлу нужны только моменты стартов и ожиданий да границы окна: остальные поля
@@ -42,6 +49,7 @@ export function createRail() {
   /* Снимок приходит на каждое событие хука, а ось перестраивается только когда сдвинулись
      засечки или границы окна: иначе рейл делал полный innerHTML несколько раз в секунду
      при активной работе, тогда как борд рядом рисуется точечно */
+  /** @param {Snapshot} snapshot */
   function update(snapshot) {
     model = { sessions: snapshot.sessions || [], usage: snapshot.usage || null };
     paint(Date.now(), railSig(model) !== paintedSig);
@@ -78,12 +86,12 @@ export function createRail() {
     }
     for (const c of model.sessions) {
       const name = escapeHtml(c.project || '');
-      if (c.createdAt >= b.left && c.createdAt <= b.right) {
+      if (c.createdAt && c.createdAt >= b.left && c.createdAt <= b.right) {
         const hue = projectMark(c.project).hue;
         html += `<i class="tick" style="left:${pct(c.createdAt, b)};--tk:hsl(${hue} 55% 62%)" title="${name} · ${clock(c.createdAt)}"></i>`;
       }
       // красная засечка только у тех, кому нужен ты; закончивший ход просто стоит
-      if (isAttention(c) && c.waitingSince >= b.left && c.waitingSince <= b.right) {
+      if (isAttention(c) && c.waitingSince && c.waitingSince >= b.left && c.waitingSince <= b.right) {
         html += `<i class="tick wait" style="left:${pct(c.waitingSince, b)}" title="${name} · ждёт с ${clock(c.waitingSince)}"></i>`;
       }
     }
@@ -96,11 +104,12 @@ export function createRail() {
 
   /* посекундный тик двигает только маркер и подписи, и только когда текст реально изменился */
   function move(now, b) {
+    if (!nowEl) return;
     const left = pct(now, b);
     if (nowEl.style.left !== left) nowEl.style.left = left;
     const nowLabel = 'сейчас ' + clock(now);
     if (nowEl.dataset.label !== nowLabel) nowEl.dataset.label = nowLabel;
-    if (winEl) {
+    if (winEl && model.usage) {
       const label = `сброс в ${clock(model.usage.endsAt)} · через ${timeLeftText(model.usage.endsAt - now)}`;
       if (winEl.dataset.label !== label) winEl.dataset.label = label;
     }

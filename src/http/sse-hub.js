@@ -23,6 +23,14 @@ const SSE_HEADERS = Object.freeze({
   Connection: 'keep-alive',
 });
 
+/**
+ * @param {object} [options]
+ * @param {(line: string) => void} [options.log]
+ * @param {number} [options.maxBuffered]
+ * @param {number} [options.keepAliveMs]
+ * @param {number} [options.heartbeatMs]
+ * @param {number} [options.debounceMs]
+ */
 export function createSseHub(options = {}) {
   const { log = () => {}, maxBuffered, keepAliveMs, heartbeatMs, debounceMs } = { ...DEFAULTS, ...options };
   const clients = new Set();
@@ -72,6 +80,12 @@ export function createSseHub(options = {}) {
     heartbeat = null;
   }
 
+  /**
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   * @param {string} comment приветственный комментарий кадра
+   * @param {{ onClose?: () => void }} [hooks]
+   */
   function open(req, res, comment, { onClose } = {}) {
     const handle = { res, onClose, dropped: false };
     res.writeHead(200, SSE_HEADERS);

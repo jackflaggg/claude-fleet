@@ -25,6 +25,15 @@ export const PERMISSION_SETTLE_MS = 3000;
  */
 export const REQUEST_ID_RE = /^[a-km-z]{5}$/;
 
+/**
+ * @param {object} deps
+ * @param {ReturnType<import('../http/sse-hub.js').createSseHub>} deps.hub
+ * @param {() => number} [deps.clock]
+ * @param {(line: string) => void} [deps.log]
+ * @param {() => void} [deps.onChange]
+ * @param {number} [deps.maxChannels]
+ * @param {number} [deps.settleMs]
+ */
 export function createChannelRegistry({
   hub,
   clock = Date.now,

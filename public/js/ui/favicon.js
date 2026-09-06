@@ -55,7 +55,8 @@ export function updateFavicon(waitingCount) {
   }
 
   try {
-    document.getElementById('favicon').href = canvas.toDataURL('image/png');
+    const link = /** @type {HTMLLinkElement|null} */ (document.getElementById('favicon'));
+    if (link) link.href = canvas.toDataURL('image/png');
   } catch {
     // Canvas may be unavailable in a restricted browser context; the static favicon remains.
   }

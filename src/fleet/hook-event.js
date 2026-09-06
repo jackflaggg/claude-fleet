@@ -11,21 +11,7 @@
 
 import { AGENT } from '../../public/js/lib/domain.js';
 
-/**
- * @typedef {object} FleetEvent
- * @property {string} agent         AGENT.CLAUDE | AGENT.CODEX
- * @property {string|null} sessionId  session_id как прислал агент
- * @property {string|null} kind      hook_event_name
- * @property {string} cwd
- * @property {string|null} appId     bundle-id терминала сессии
- * @property {number|null} pid       PID процесса агента ($PPID hook-команды)
- * @property {string|null} prompt    текст промпта (UserPromptSubmit)
- * @property {string|null} tool      имя инструмента
- * @property {object|null} toolInput tool_input как есть
- * @property {string} notification   notification_type ('' если нет)
- * @property {string|null} message   текст уведомления или ошибки
- * @property {boolean} isError       инструмент ответил ошибкой
- */
+/** @import { FleetEvent, HookHeaders } from '../../types.js' */
 
 const text = (value) => (typeof value === 'string' ? value : null);
 
@@ -39,11 +25,11 @@ function isToolError(toolResponse) {
 
 /**
  * @param {unknown} raw распарсенный JSON события хука
- * @param {Record<string, string|string[]|undefined>} [headers] заголовки запроса от report.sh
+ * @param {HookHeaders} [headers] заголовки запроса от report.sh
  * @returns {FleetEvent}
  */
 export function normalizeHookEvent(raw, headers = {}) {
-  const event = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {};
+  const event = /** @type {Record<string, any>} */ (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {});
   const pid = Number(headers['x-fleet-pid']);
   return {
     agent: headers['x-fleet-agent'] === AGENT.CODEX ? AGENT.CODEX : AGENT.CLAUDE,

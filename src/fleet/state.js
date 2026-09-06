@@ -11,6 +11,8 @@ import { bumpActivity } from '../../public/js/lib/activity.js';
 import { AGENT, STATUS, WAIT_REASON } from '../../public/js/lib/domain.js';
 import { normalizeHookEvent } from './hook-event.js';
 
+/** @import { Card, FleetEvent } from '../../types.js' */
+
 /**
  * События хука, которые борд понимает. Схема событий Claude Code не наша и может измениться
  * с обновлением: появится новый тип или переименуется старый. Тогда карточки начнут молча
@@ -248,10 +250,10 @@ export function applyRawEvent(sessions, raw, now, headers = {}) {
  * Применяет одно событие хука к текущему набору сессий и возвращает новый набор
  * (иммутабельно). Малформленные события (без sessionId / kind) игнорирует.
  *
- * @param {Record<string, object>} sessions текущее состояние
- * @param {import('./hook-event.js').FleetEvent} event нормализованное событие
+ * @param {Record<string, Card>} sessions текущее состояние
+ * @param {FleetEvent} event нормализованное событие
  * @param {number} now метка времени в мс (передаётся снаружи ради чистоты функции)
- * @returns {Record<string, object>} новый набор сессий
+ * @returns {Record<string, Card>} новый набор сессий
  */
 export function applyEvent(sessions, event, now) {
   const next = { ...sessions };
@@ -439,8 +441,14 @@ function isBlank(card) {
  * иначе висела бы на борде вечно. Чистая функция (время и пороги - снаружи), вызывается
  * по таймеру из server.js. Возвращает новый объект; если ничего не протухло - все прежние
  * карточки на месте (сравнивай размеры на стороне вызова, чтобы не слать лишний broadcast).
+ * @param {Record<string, Card>} sessions
+ * @param {number} now
+ * @param {number} staleMs
+ * @param {number} [blankMs]
+ * @returns {Record<string, Card>}
  */
 export function pruneStale(sessions, now, staleMs, blankMs = staleMs) {
+  /** @type {Record<string, Card>} */
   const next = {};
   for (const [id, card] of Object.entries(sessions)) {
     const limit = isBlank(card) ? blankMs : staleMs;

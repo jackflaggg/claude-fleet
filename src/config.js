@@ -1,6 +1,8 @@
 import os from 'node:os';
 import { join } from 'node:path';
 
+/** @import { Config } from '../types.js' */
+
 /**
  * Конфиг процесса из окружения. Машинно-зависимые пути и настройки живут в .env, не в коде;
  * здесь единственное место, где имена переменных FLEET_* превращаются в значения. Тот же
@@ -43,6 +45,7 @@ const HOUR = 60 * MINUTE;
  * @param {(path: string) => boolean} deps.exists проверка файла (лаунчер WebStorm)
  * @param {string} deps.root корень репозитория: дефолт персиста лежит рядом с server.js
  * @param {string} [deps.home] домашний каталог: дефолт папки транскриптов
+ * @returns {Readonly<Config>}
  */
 export function loadConfig(env, { log, exists, root, home = os.homedir() }) {
   const number = (name, fallback, min) => envNumber(env, log, name, fallback, min);

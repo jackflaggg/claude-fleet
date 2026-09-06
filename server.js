@@ -21,7 +21,7 @@ const { server } = createFleet({ config, root: ROOT, log });
 
 // Без своего обработчика ошибка listen всплывает необработанным исключением, launchd
 // поднимает процесс заново - и так по кругу, а в логе только стопка стартовых строк.
-server.on('error', (error) => {
+server.on('error', (/** @type {NodeJS.ErrnoException} */ error) => {
   if (error.code === 'EADDRINUSE') {
     log(`порт ${config.port} уже занят - борд уже запущен? (lsof -i :${config.port})`);
   } else {

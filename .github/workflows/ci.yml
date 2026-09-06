@@ -23,6 +23,19 @@ jobs:
       - name: bash -n по всем sh
         run: git ls-files '*.sh' | xargs -n1 bash -n
 
+  # JSDoc-типы проверяет tsc --checkJs; typescript и @types/node это devDependencies корня,
+  # рантайм по-прежнему без зависимостей
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
   unit:
     runs-on: ubuntu-latest
     strategy:

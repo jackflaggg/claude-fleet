@@ -28,6 +28,8 @@ import { applyEvent, pruneStale, isHandledEvent } from './fleet/state.js';
 import { normalizeHookEvent } from './fleet/hook-event.js';
 import { createSessionStore } from './fleet/store.js';
 import { resolveFocus } from './focus/focus.js';
+
+/** @import { Card, Config } from '../types.js' */
 import { buildAllowLists, isAllowedHost, isCrossSite, boundedKey } from './http/guards.js';
 import { describeWindow } from './usage/usage.js';
 import { createUsageScanner } from './usage/scanner.js';
@@ -98,7 +100,7 @@ function decodeId(pathname, prefix) {
 
 /**
  * @param {object} deps
- * @param {object} deps.config замороженный конфиг из `loadConfig`
+ * @param {Config} deps.config замороженный конфиг из `loadConfig`
  * @param {string} deps.root корень репозитория: отсюда раздаётся `public/`
  * @param {(line: string) => void} deps.log
  * @param {() => number} [deps.clock] источник времени, в тестах подменяется
@@ -151,6 +153,7 @@ export function createFleet({
 
   /** Персист: страховка на рестарт, при ребуте сбрасывается (bootMs), формат и миграции в store. */
   const store = createSessionStore({ file: STATE_FILE, log, clock, bootMs, staleMs: STALE_MS, blankMs: BLANK_MS });
+  /** @type {Record<string, Card>} */
   let sessions = store.load();
 
   let closedSince = new Map();
@@ -162,9 +165,13 @@ export function createFleet({
    * переподключению мигать карточкой.
    */
   function scanLiveness() {
-    const pids = [...new Set(Object.values(sessions)
-      .filter((card) => Number.isSafeInteger(card?.processPid))
-      .map((card) => card.processPid))];
+    /** @type {number[]} */
+    const knownPids = [];
+    for (const card of Object.values(sessions)) {
+      if (card.processPid != null && Number.isSafeInteger(card.processPid)) knownPids.push(card.processPid);
+    }
+    const pids = [...new Set(knownPids)];
+    /** @type {Set<number>} */
     const alivePids = new Set();
     for (const pid of pids) {
       if (probe(pid)) alivePids.add(pid);
@@ -536,11 +543,11 @@ export function createFleet({
     store.close();
     boards.close();
     channelStreams.close();
-    return new Promise((resolve) => {
+    return /** @type {Promise<void>} */ (new Promise((resolve) => {
       if (!server.listening) return resolve();
       server.close(() => resolve());
       server.closeAllConnections?.();
-    });
+    }));
   }
 
   return { server, close };

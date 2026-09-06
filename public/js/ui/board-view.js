@@ -6,18 +6,58 @@ import { updateFavicon } from './favicon.js';
 import { cardHtml, cardSig, rowHtml } from './markup.js';
 import { layoutKey, splitSections } from './order.js';
 
+/** @import { Card, Snapshot } from '../../../types.js' */
+
 /* искра гаснет, когда последние две минуты пусты: так «затухание» видно раньше бейджа */
 const QUIET_MINUTES = 2;
+
+/** Элемент каркаса из index.html; его отсутствие это сломанная страница, а не рабочий случай. */
+function byId(id) {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`на странице нет #${id}`);
+  return el;
+}
+
+/**
+ * Ближайший предок цели события по селектору. Цель клика может быть текстовым узлом,
+ * у которого нет `closest`.
+ * @param {Event} event
+ * @param {string} selector
+ * @returns {HTMLElement | null}
+ */
+function closestFrom(event, selector) {
+  const target = event.target instanceof Element ? event.target : null;
+  return /** @type {HTMLElement | null} */ (target?.closest(selector) ?? null);
+}
+
+/** @param {Element} el @returns {string} id сессии у карточки или строки, в которой лежит el */
+function unitIdOf(el) {
+  const unit = /** @type {HTMLElement | null} */ (el.closest('.unit'));
+  return unit?.dataset.id ?? '';
+}
 
 /* Здесь только склейка с документом: разметку строят чистые функции `markup.js`, порядок
    и раскладку решает `order.js`, и то и другое покрыто тестами без DOM. */
 export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onReply }) {
-  const board = document.getElementById('board');
-  const empty = document.getElementById('empty');
+  const board = byId('board');
+  const empty = byId('empty');
+  /** @type {Snapshot} */
   let data = { sessions: [] };
+  /** @type {string | null} */
   let lastSig = null;
   let lastLayout = '';
+  /** @type {Map<string, HTMLElement>} */
   const slots = new Map();
+
+  /** Все карточки и строки борда. */
+  function units() {
+    return /** @type {NodeListOf<HTMLElement>} */ (board.querySelectorAll('.unit'));
+  }
+
+  /** @param {Element} el @param {string} selector @returns {HTMLElement | null} */
+  function part(el, selector) {
+    return /** @type {HTMLElement | null} */ (el.querySelector(selector));
+  }
 
   // разделители не встречаются в полях карточки, поэтому склейка соседних сессий однозначна
   function sig(sessions) {
@@ -29,11 +69,13 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
      (а кнопка удаления показывается именно по ховеру), сбрасывает фокус клавиатуры и
      способно увести клик мимо цели - при активной работе борд перерисовывается несколько
      раз в секунду. */
+  /** @type {Map<string, { el: HTMLElement, sig: string | null, shape: string }>} */
   const cardEls = new Map();
 
   /* shape - карточка (ждущие) или строка (в работе). Сессия переходит между секциями,
      и форма при этом меняется: тогда элемент пересоздаём, иначе внутри строки остался бы
      markup карточки. */
+  /** @param {Card} c @param {'card' | 'row'} shape */
   function cardEl(c, shape) {
     let entry = cardEls.get(c.sessionId);
     if (!entry || entry.shape !== shape) {
@@ -63,13 +105,15 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
 
   /* Всё, что тикает без ре-рендера, лежит на самом элементе: время последнего события
      (у строки нет подписи «N сек назад»), буфер активности для искры. */
+  /** @param {HTMLElement} el @param {Card} c */
   function syncLive(el, c) {
-    el.dataset.ts = c.updatedAt || 0;
+    el.dataset.ts = String(c.updatedAt || 0);
     el.dataset.act = Array.isArray(c.activity) ? c.activity.join(',') : '';
-    el.dataset.actmin = c.activityMinute || 0;
+    el.dataset.actmin = String(c.activityMinute || 0);
   }
 
   /** Карточки исчезнувших сессий выкидываем, иначе Map растёт до перезагрузки страницы. */
+  /** @param {Card[]} list */
   function forgetGoneCards(list) {
     const alive = new Set(list.map((c) => c.sessionId));
     for (const id of cardEls.keys()) {
@@ -105,7 +149,9 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
       }
       board.innerHTML = html;
       slots.clear();
-      for (const el of board.querySelectorAll('[data-slot]')) slots.set(el.dataset.slot, el);
+      for (const el of /** @type {NodeListOf<HTMLElement>} */ (board.querySelectorAll('[data-slot]'))) {
+        slots.set(el.dataset.slot ?? '', el);
+      }
     }
     setText(document.getElementById('nWaiting'), String(waiting.length));
     setText(document.getElementById('nDone'), String(done.length));
@@ -135,13 +181,13 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     setText(document.getElementById('subtitle'), list.length
       ? `${list.length} ${plural(list.length, 'сессия', 'сессии', 'сессий')} на связи${split}`
       : '');
-    document.getElementById('counts').innerHTML = list.length
+    byId('counts').innerHTML = list.length
       ? `<span><b>${busy.length}</b>в работе</span>`
         + (done.length ? `<span><b>${done.length}</b>закончили ход</span>` : '')
         + (waiting.length ? `<span class="w"><b>${waiting.length}</b>ждут тебя</span>` : '')
       : '';
     document.title = (waiting.length ? `(${waiting.length}) ` : '') + 'Fleet';
-    document.getElementById('mark').classList.toggle('alert', waiting.length > 0);
+    byId('mark').classList.toggle('alert', waiting.length > 0);
     updateFavicon(waiting.length);
     onWaiting(waiting);
   }
@@ -149,7 +195,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
   // событий, которых борд не понимает, в норме нет: если появились - обновился агент
   // и часть статусов, скорее всего, перестала обновляться
   function renderUnknown() {
-    const el = document.getElementById('unknown');
+    const el = byId('unknown');
     const list = data.unknown || [];
     el.hidden = list.length === 0;
     if (!list.length) return;
@@ -162,23 +208,26 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
 
   // присваивание textContent дёргает перерисовку узла даже тем же значением, а тик идёт
   // раз в секунду круглосуточно - сверяем перед записью
+  /** @param {Element | null} node @param {string} value */
   function setText(node, value) {
     if (node && node.textContent !== value) node.textContent = value;
   }
 
   function syncTimestamps() {
-    const byId = Object.create(null);
-    for (const c of data.sessions || []) byId[c.sessionId] = c;
-    for (const el of board.querySelectorAll('.unit')) {
-      const c = byId[el.dataset.id];
+    /** @type {Record<string, Card>} */
+    const cardsById = Object.create(null);
+    for (const c of data.sessions || []) cardsById[c.sessionId] = c;
+    for (const el of units()) {
+      const c = cardsById[el.dataset.id ?? ''];
       if (c) syncLive(el, c);
     }
   }
 
   /* Искра: столбики досдвигаются по текущей минуте и перерисовываются только когда
      их набор изменился - тик идёт раз в секунду по всем строкам */
+  /** @param {HTMLElement} el @param {number} now */
   function paintSpark(el, now) {
-    const spark = el.querySelector('.spark');
+    const spark = part(el, '.spark');
     if (!spark) return;
     const activity = el.dataset.act ? el.dataset.act.split(',').map(Number) : [];
     const bars = sparkBars(activity, Number(el.dataset.actmin), now);
@@ -198,13 +247,13 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
   // раз в секунду двигаем время «на месте» (без ре-рендера) и подсвечиваем простаивающие строки
   function tickTimes() {
     const now = Date.now();
-    for (const el of board.querySelectorAll('.unit')) {
-      const wt = el.querySelector('.wt');
+    for (const el of units()) {
+      const wt = part(el, '.wt');
       if (wt) setText(wt, timerText(Number(wt.dataset.ts), now));
-      const age = el.querySelector('.age');
+      const age = part(el, '.age');
       if (age) setText(age, ageText(Number(age.dataset.created), now));
       // «нет активности» только для активных статусов - waiting/ready законно ждут человека
-      const busy = ACTIVE_STATUSES.has(el.dataset.status);
+      const busy = ACTIVE_STATUSES.has(el.dataset.status ?? '');
       const ts = Number(el.dataset.ts) || 0;
       const idle = busy && ts > 0 && now - ts > IDLE_MS;
       el.classList.toggle('idle', idle);
@@ -213,6 +262,7 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     }
   }
 
+  /** @param {Snapshot} nextData */
   function update(nextData) {
     data = nextData;
     const nextSignature = sig(data.sessions || []);
@@ -225,46 +275,47 @@ export function createBoardView({ onWaiting, onFocus, onDrop, onPermission, onRe
     renderUnknown();
   }
 
+  /** @param {boolean} isLive */
   function setLive(isLive) {
-    const live = document.getElementById('live');
+    const live = byId('live');
     live.classList.toggle('on', isLive);
     live.classList.toggle('off', !isLive);
-    document.getElementById('liveText').textContent = isLive ? 'live' : 'нет связи';
+    byId('liveText').textContent = isLive ? 'live' : 'нет связи';
   }
 
   board.addEventListener('click', (event) => {
-    const removeButton = event.target.closest('.kill');
+    const removeButton = closestFrom(event, '.kill');
     if (removeButton) {
       onDrop(removeButton.dataset.kill);
       return;
     }
-    const verdict = event.target.closest('[data-verdict]');
+    const verdict = closestFrom(event, '[data-verdict]');
     if (verdict) {
-      onPermission(verdict.closest('.unit').dataset.id, verdict.dataset.verdict);
+      onPermission(unitIdOf(verdict), verdict.dataset.verdict);
       return;
     }
     // поле ввода и кнопка формы ответа: клик по ним не значит «перейти к сессии»
-    if (event.target.closest('.reply')) return;
-    const unit = event.target.closest('.unit');
+    if (closestFrom(event, '.reply')) return;
+    const unit = closestFrom(event, '.unit');
     if (unit) onFocus(unit.dataset.id);
   });
 
   board.addEventListener('submit', async (event) => {
-    const form = event.target.closest('.reply');
+    const form = closestFrom(event, '.reply');
     if (!form) return;
     event.preventDefault();
     const input = form.querySelector('input');
-    const text = input.value.trim();
-    if (!text) return;
-    const sent = await onReply(form.closest('.unit').dataset.id, text);
+    const text = input?.value.trim();
+    if (!input || !text) return;
+    const sent = await onReply(unitIdOf(form), text);
     if (sent) input.value = '';
   });
 
   // Карточка и строка содержат кнопки, поэтому сами остаются div с role="button".
   board.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
-    const unit = event.target.closest('.unit');
-    if (!unit || event.target.closest('.kill, .acts, .reply')) return;
+    const unit = closestFrom(event, '.unit');
+    if (!unit || closestFrom(event, '.kill, .acts, .reply')) return;
     event.preventDefault();
     onFocus(unit.dataset.id);
   });

@@ -39,8 +39,9 @@ for (let phase = 0; phase < PHASES; phase += 1) {
 assert.equal(missing.size, 0, 'реестр закрытых сессий вырос');
 // Первые две фазы прогревают и расширяют арены V8. После прогрева heap и RSS должны выйти
 // на плато; сравниваем третью и пятую точки, а не холодный старт процесса.
-const heapGrowth = samples.at(-1).heapUsed - samples[2].heapUsed;
-const rssGrowth = samples.at(-1).rss - samples[2].rss;
+const last = samples[samples.length - 1];
+const heapGrowth = last.heapUsed - samples[2].heapUsed;
+const rssGrowth = last.rss - samples[2].rss;
 assert.ok(heapGrowth < STEADY_HEAP_BUDGET, `heap продолжил расти: ${heapGrowth} bytes`);
 assert.ok(rssGrowth < STEADY_RSS_BUDGET, `RSS продолжил расти: ${rssGrowth} bytes`);
 

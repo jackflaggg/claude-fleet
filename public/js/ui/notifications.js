@@ -4,7 +4,7 @@ import { agentOf } from '../lib/domain.js';
 const NOTIFY_KEY = 'fleet-notify';
 
 export function createNotifications({ onFocus, toast }) {
-  const bell = document.getElementById('bell');
+  const bell = /** @type {HTMLElement} */ (document.getElementById('bell'));
   let notifyOn = localStorage.getItem(NOTIFY_KEY) === '1';
   let knownWaiting = new Set();
   let firstSnapshot = true;
