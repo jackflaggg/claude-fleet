@@ -28,18 +28,37 @@ import { isProcessAlive, pruneClosedSessions } from './liveness.js';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 
-// Конфиг из .env (опционально). Node 22 читает .env без зависимостей.
-// Файла нет или он битый - молча остаёмся на дефолтах.
+/** Лог в fleet.log со временем: без него в логе стопка одинаковых строк без понимания, когда. */
+function log(message) {
+  process.stdout.write(`${new Date().toLocaleString('ru-RU')}  ${message}\n`);
+}
+
+// Конфиг из .env (опционально). Node 22 читает .env без зависимостей; уже заданные
+// переменные окружения файл не перебивает. Файла нет - дефолты; битый - дефолты и строка в лог.
 const ENV_FILE = join(ROOT, '.env');
 if (existsSync(ENV_FILE)) {
   try {
     process.loadEnvFile(ENV_FILE);
-  } catch {
-    // битый .env не должен ронять сервер
+  } catch (error) {
+    log(`.env не прочитался (${error.message}), работаю на дефолтах`);
   }
 }
 
-const PORT = Number(process.env.FLEET_PORT) || 4319;
+/**
+ * Число из окружения. Не задано - дефолт молча; задано, но не число или меньше min - дефолт
+ * со строкой в лог. Прежний `Number(x) || 6` превращал FLEET_STALE_HOURS=0 в шесть часов,
+ * и опечатка в конфиге не проявлялась ничем.
+ */
+function envNumber(name, fallback, min = Number.MIN_VALUE) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  if (Number.isFinite(value) && value >= min) return value;
+  log(`${name}=${raw}: ожидалось число не меньше ${min}, беру ${fallback}`);
+  return fallback;
+}
+
+const PORT = envNumber('FLEET_PORT', 4319, 1);
 const HOST = process.env.FLEET_HOST || '127.0.0.1';
 const PUBLIC_DIR = join(ROOT, 'public');
 const INDEX_FILE = join(PUBLIC_DIR, 'index.html');
@@ -48,11 +67,13 @@ const STATIC_TYPES = new Map([
   ['.js', 'text/javascript; charset=utf-8'],
   ['.woff2', 'font/woff2'],
 ]);
-const STATE_FILE = join(ROOT, '.fleet-state.json');
-const STALE_MS = (Number(process.env.FLEET_STALE_HOURS) || 6) * 60 * 60 * 1000;
+// Путь персиста настраиваемый ради тестов: они поднимают настоящий server.js спавном и не
+// должны затирать состояние живого борда в этом же репозитории.
+const STATE_FILE = process.env.FLEET_STATE_FILE || join(ROOT, '.fleet-state.json');
+const STALE_MS = envNumber('FLEET_STALE_HOURS', 6) * 60 * 60 * 1000;
 // Отдельный, куда более короткий порог для карточек без задачи и без инструмента: за ними
 // нет работы, которую можно потерять (см. isBlank в state.js).
-const BLANK_MS = (Number(process.env.FLEET_BLANK_MINUTES) || 15) * 60 * 1000;
+const BLANK_MS = envNumber('FLEET_BLANK_MINUTES', 15) * 60 * 1000;
 const LIVENESS_INTERVAL_MS = 10 * 1000;
 const LIVENESS_GRACE_MS = 10 * 1000;
 
@@ -82,14 +103,12 @@ const PERMISSION_SETTLE_MS = 3000;
  * тикает на фронте сам).
  */
 const TRANSCRIPTS_DIR = process.env.FLEET_TRANSCRIPTS || join(os.homedir(), '.claude', 'projects');
-const USAGE_WINDOW_MS = (Number(process.env.FLEET_USAGE_HOURS) || 5) * 60 * 60 * 1000;
+const USAGE_WINDOW_MS = envNumber('FLEET_USAGE_HOURS', 5) * 60 * 60 * 1000;
 /**
  * Claude открывает окно не по секунде первого запроса, а по границе получаса вниз (сверено
  * с `/usage`, см. usage.js). 0 отключает выравнивание, если в тарифе это изменится.
  */
-const USAGE_ALIGN_MS = (process.env.FLEET_USAGE_ALIGN_MIN === undefined
-  ? 30
-  : Number(process.env.FLEET_USAGE_ALIGN_MIN) || 0) * 60 * 1000;
+const USAGE_ALIGN_MS = envNumber('FLEET_USAGE_ALIGN_MIN', 30, 0) * 60 * 1000;
 const USAGE_POLL_MS = 60 * 1000;
 /**
  * Потолок на первое чтение незнакомого файла. Транскрипт долгой сессии доходит до 16 МБ,
@@ -115,10 +134,20 @@ const MAX_BODY = 4 * 1024 * 1024;
 /** А это уже не наш хук, а чей-то поток без конца - рвём соединение, не дочитывая. */
 const HARD_BODY_LIMIT = 32 * 1024 * 1024;
 
-/** Лог в fleet.log со временем: без него в логе стопка одинаковых строк без понимания, когда. */
-function log(message) {
-  process.stdout.write(`${new Date().toLocaleString('ru-RU')}  ${message}\n`);
-}
+/**
+ * Рассылка снимка коалесцируется: шторм событий хука (несколько в секунду на активную сессию)
+ * иначе давал снимок всего состояния на каждое событие - замерено 20 КБ на событие при
+ * двадцати сессиях, 123 МБ на один борд за 6000 событий. Полсотни миллисекунд глаз не видит.
+ */
+const BROADCAST_DEBOUNCE_MS = 50;
+/**
+ * Потолок несброшенного буфера одного SSE-клиента. Клиент, который перестал читать (вкладка на
+ * уснувшем планшете, half-open TCP), иначе копит снимки в памяти сервера без предела:
+ * замерено +203 МБ RSS за 6000 событий. Такого клиента рвём, EventSource переподключится сам.
+ */
+const SSE_MAX_BUFFERED = 1024 * 1024;
+/** TCP keepalive на SSE-сокетах, чтобы мёртвый пир закрылся сам, а не висел в реестре. */
+const SSE_KEEPALIVE_MS = 30_000;
 
 /**
  * Кто имеет право обращаться к борду. Списки и сами проверки живут в guards.js (чистое ядро
@@ -202,8 +231,9 @@ function persist() {
       // Пишем через временный файл + rename (атомарная операция в пределах ФС): иначе
       // падение ровно в момент записи оставит обрезанный JSON, а loadState молча вернёт {}
       // и все живые карточки исчезнут разом.
+      // В файле промпты и команды Bash сессий: читать его должен только владелец.
       const tmp = `${STATE_FILE}.tmp`;
-      writeFileSync(tmp, JSON.stringify(sessions));
+      writeFileSync(tmp, JSON.stringify(sessions), { mode: 0o600 });
       renameSync(tmp, STATE_FILE);
     } catch {
       // персист не критичен, борд работает и без него
@@ -241,13 +271,38 @@ function withChannel(card) {
 function sendChannelCommand(pid, command) {
   const channel = channels.get(pid);
   if (!channel) return false;
-  try {
-    channel.res.write(`data: ${JSON.stringify(command)}\n\n`);
-    return true;
-  } catch {
-    channels.delete(pid);
+  return writeSse(channel.res, `data: ${JSON.stringify(command)}\n\n`);
+}
+
+/**
+ * Запись в SSE-поток с защитой от клиента, который перестал читать. Возврат `write` и буфер
+ * `writableLength` раньше игнорировались, и мёртвый пир копил снимки в памяти без предела.
+ * Разрушенный сокет прибирает его же обработчик 'close'.
+ */
+function writeSse(res, data) {
+  if (res.writableLength > SSE_MAX_BUFFERED) {
+    log(`SSE-клиент не читает (${res.writableLength} байт в буфере), отключаю`);
+    res.destroy();
     return false;
   }
+  try {
+    res.write(data);
+    return true;
+  } catch {
+    res.destroy();
+    return false;
+  }
+}
+
+function openSse(req, res, comment) {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  req.socket.setKeepAlive(true, SSE_KEEPALIVE_MS);
+  res.write(`: ${comment}\n\n`);
+  return setInterval(() => writeSse(res, ': ping\n\n'), 25_000);
 }
 
 /** Процесс канала держит этот поток открытым всю жизнь сессии; команды борда идут по нему. */
@@ -266,16 +321,8 @@ function handleChannelCommands(req, res, url) {
   if (previous) {
     try { previous.res.end(); } catch { /* уже закрыт */ }
   }
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
-  res.write(': fleet channel\n\n');
+  const heartbeat = openSse(req, res, 'fleet channel');
   channels.set(pid, { res, since: Date.now() });
-  const heartbeat = setInterval(() => {
-    try { res.write(': ping\n\n'); } catch { /* уборку сделает close */ }
-  }, 25_000);
   const cleanup = () => {
     clearInterval(heartbeat);
     if (channels.get(pid)?.res !== res) return;
@@ -289,6 +336,11 @@ function handleChannelCommands(req, res, url) {
   broadcast();
 }
 
+/**
+ * Форма request_id, которую Claude Code отдавал каналу на момент прототипа: пять строчных
+ * букв. Это наблюдение, а не контракт, поэтому отказ по нему обязан попадать в лог: иначе
+ * смена формата в новой версии выглядит как «кнопки разрешения просто не появляются».
+ */
 const REQUEST_ID_RE = /^[a-km-z]{5}$/;
 
 /** Claude Code открыл диалог разрешения и отдал его каналу; тот пересылает сюда. */
@@ -302,8 +354,13 @@ async function handlePermissionRequest(req, res) {
   }
   const pid = Number(body?.pid);
   const requestId = String(body?.request_id ?? '');
-  if (!channels.has(pid) || !REQUEST_ID_RE.test(requestId)) {
-    res.writeHead(409).end('канал не подключён или плохой request_id');
+  if (!channels.has(pid)) {
+    res.writeHead(409).end('канал не подключён');
+    return;
+  }
+  if (!REQUEST_ID_RE.test(requestId)) {
+    log(`запрос разрешения отклонён: request_id «${requestId.slice(0, 40)}» не похож на формат Claude Code, обновился формат?`);
+    res.writeHead(409).end('плохой request_id');
     return;
   }
   pendingPermissions.set(pid, {
@@ -575,18 +632,19 @@ function payload() {
   return `data: ${JSON.stringify({ sessions: snapshot(), unknown, usage })}\n\n`;
 }
 
+let broadcastTimer = null;
+
+/** Снимок уходит бордам не сразу, а пачкой за BROADCAST_DEBOUNCE_MS: см. константу. */
 function broadcast() {
+  if (broadcastTimer) return;
+  broadcastTimer = setTimeout(flushBroadcast, BROADCAST_DEBOUNCE_MS);
+}
+
+function flushBroadcast() {
+  broadcastTimer = null;
+  if (!sseClients.size) return;
   const data = payload();
-  for (const client of sseClients) {
-    // Клиент мог отвалиться в момент между записями (событие 'close' ещё не пришло) -
-    // запись в разрушённый поток кинет ошибку. Ловим и выкидываем клиента, чтобы одна
-    // мёртвая вкладка не срывала рассылку остальным.
-    try {
-      client.write(data);
-    } catch {
-      sseClients.delete(client);
-    }
-  }
+  for (const client of sseClients) writeSse(client, data);
 }
 
 async function readBody(req, limit = MAX_BODY) {
@@ -669,21 +727,9 @@ function handleStream(req, res) {
   // и окно лимита успело уехать. Пересчитываем сразу, не дожидаясь тика опроса.
   if (sseClients.size === 0) scanUsage();
   if (sseClients.size === 0) scanLiveness();
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
+  const heartbeat = openSse(req, res, 'fleet');
   res.write(payload());
   sseClients.add(res);
-
-  const heartbeat = setInterval(() => {
-    try {
-      res.write(': ping\n\n');
-    } catch {
-      // соединение уже мертво - уборку сделает 'close'/'error'
-    }
-  }, 25_000);
   const cleanup = () => {
     clearInterval(heartbeat);
     sseClients.delete(res);
@@ -782,50 +828,71 @@ async function handlePublicAsset(res, pathname) {
   }
 }
 
-const server = http.createServer((req, res) => {
+/**
+ * id сессии из хвоста пути. Битое percent-encoding даёт null, а не URIError: раньше один
+ * `POST /focus/%` ронял весь процесс, и launchd поднимал его лишь через ThrottleInterval.
+ */
+function decodeId(pathname, prefix) {
+  try {
+    return decodeURIComponent(pathname.slice(prefix.length));
+  } catch {
+    return null;
+  }
+}
+
+/** Ошибку асинхронного обработчика не глотаем молча: иначе карточка залипает без следа в логе. */
+function guard(promise, res, what) {
+  promise.catch((error) => {
+    log(`${what}: ${error.message}`);
+    if (!res.headersSent) res.writeHead(500).end();
+  });
+}
+
+function route(req, res) {
   const url = new URL(req.url, `http://localhost:${PORT}`);
 
   if (!isAllowedHost(req.headers, ALLOWED_HOSTS)) {
     res.writeHead(403).end('чужой Host');
     return;
   }
-  if (req.method !== 'GET' && isCrossSite(req.headers, ALLOWED_ORIGINS)) {
+  // Мутирует состояние не только не-GET: GET /channel/commands регистрирует канал и рвёт
+  // прежний. Без этой проверки чужая страница перехватывала канал и забивала реестр до 503.
+  const mutating = req.method !== 'GET' || url.pathname.startsWith('/channel/');
+  if (mutating && isCrossSite(req.headers, ALLOWED_ORIGINS)) {
     res.writeHead(403).end('запрос с чужой страницы');
     return;
   }
 
   if (req.method === 'POST' && url.pathname === '/event') {
-    handleEvent(req, res).catch(() => {});
-    return;
+    return guard(handleEvent(req, res), res, 'событие не обработано');
   }
   if (req.method === 'GET' && url.pathname === '/stream') return handleStream(req, res);
   if (req.method === 'GET' && url.pathname === '/stats') return handleStats(res);
 
   if (req.method === 'POST' && url.pathname.startsWith('/focus/')) {
-    const id = decodeURIComponent(url.pathname.slice('/focus/'.length));
-    return handleFocus(res, id);
+    const id = decodeId(url.pathname, '/focus/');
+    return id === null ? res.writeHead(400).end('плохой id') : handleFocus(res, id);
   }
 
   if (req.method === 'DELETE' && url.pathname.startsWith('/session/')) {
-    const id = decodeURIComponent(url.pathname.slice('/session/'.length));
-    return handleDelete(res, id);
+    const id = decodeId(url.pathname, '/session/');
+    return id === null ? res.writeHead(400).end('плохой id') : handleDelete(res, id);
   }
 
   if (CHANNEL_ENABLED && url.pathname.startsWith('/channel/')) {
     if (req.method === 'GET' && url.pathname === '/channel/commands') return handleChannelCommands(req, res, url);
     if (req.method === 'POST' && url.pathname === '/channel/permission-request') {
-      handlePermissionRequest(req, res).catch(() => {});
-      return;
+      return guard(handlePermissionRequest(req, res), res, 'запрос разрешения не обработан');
     }
     if (req.method === 'POST' && url.pathname.startsWith('/channel/permission/')) {
-      const id = decodeURIComponent(url.pathname.slice('/channel/permission/'.length));
-      handlePermissionVerdict(req, res, id).catch(() => {});
-      return;
+      const id = decodeId(url.pathname, '/channel/permission/');
+      if (id === null) return res.writeHead(400).end('плохой id');
+      return guard(handlePermissionVerdict(req, res, id), res, 'вердикт не обработан');
     }
     if (req.method === 'POST' && url.pathname.startsWith('/channel/message/')) {
-      const id = decodeURIComponent(url.pathname.slice('/channel/message/'.length));
-      handleChannelMessage(req, res, id).catch(() => {});
-      return;
+      const id = decodeId(url.pathname, '/channel/message/');
+      if (id === null) return res.writeHead(400).end('плохой id');
+      return guard(handleChannelMessage(req, res, id), res, 'ответ сессии не обработан');
     }
   }
 
@@ -837,6 +904,17 @@ const server = http.createServer((req, res) => {
   }
 
   res.writeHead(404).end('not found');
+}
+
+// Синхронная ошибка в маршруте иначе всплывает необработанным исключением и убивает процесс
+// вместе со всеми SSE-подключениями; 500 одному запросу дешевле.
+const server = http.createServer((req, res) => {
+  try {
+    route(req, res);
+  } catch (error) {
+    log(`маршрут ${req.method} ${req.url} упал: ${error.stack}`);
+    if (!res.headersSent) res.writeHead(500).end();
+  }
 });
 
 /**

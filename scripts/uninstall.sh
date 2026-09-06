@@ -33,13 +33,15 @@ try {
 }
 copyFileSync(settingsPath, `${settingsPath}.bak`);
 
+// путь в кавычках (текущая форма install.sh) и голый (установки до кавычек) - оба наши
+const quoted = `"${hookPath.replaceAll('"', '\\"')}"`;
 let removed = 0;
 for (const [event, groups] of Object.entries(settings.hooks ?? {})) {
   // выкидываем только свои команды, чужие хуки в той же группе остаются жить
   const kept = groups
     .map((group) => {
       const hooks = (group?.hooks ?? []).filter((h) => {
-        const mine = h?.command === hookPath;
+        const mine = h?.command === hookPath || h?.command === quoted;
         if (mine) removed += 1;
         return !mine;
       });

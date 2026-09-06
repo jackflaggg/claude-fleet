@@ -17,8 +17,16 @@ export function createRail() {
   const axis = document.getElementById('axis');
   let model = { sessions: [], usage: null };
   let paintedLeft = null;
+  let paintedSig = null;
   let nowEl = null;
   let winEl = null;
+
+  /* Из снимка рейлу нужны только моменты стартов и ожиданий да границы окна: остальные поля
+     карточки меняются на каждом событии хука, и перестраивать по ним ось незачем */
+  function railSig(m) {
+    const marks = m.sessions.map((c) => [c.project, c.createdAt, sectionOf(c) === 'attn' ? c.waitingSince : ''].join(''));
+    return [m.usage?.startedAt, m.usage?.endsAt, ...marks].join('');
+  }
 
   function bounds(now) {
     const usage = model.usage;
@@ -31,9 +39,12 @@ export function createRail() {
     return ((timestamp - b.left) / SPAN_MS * 100).toFixed(2) + '%';
   }
 
+  /* Снимок приходит на каждое событие хука, а ось перестраивается только когда сдвинулись
+     засечки или границы окна: иначе рейл делал полный innerHTML несколько раз в секунду
+     при активной работе, тогда как борд рядом рисуется точечно */
   function update(snapshot) {
     model = { sessions: snapshot.sessions || [], usage: snapshot.usage || null };
-    paint(Date.now(), true);
+    paint(Date.now(), railSig(model) !== paintedSig);
   }
 
   function tick() {
@@ -51,6 +62,7 @@ export function createRail() {
 
   function rebuild(now, b) {
     paintedLeft = b.left;
+    paintedSig = railSig(model);
     const usage = model.usage;
     let html = '<div class="base"></div>';
     if (usage && usage.endsAt > now) {

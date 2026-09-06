@@ -14,6 +14,6 @@ jobs:
         with:
           node-version: 22
       - name: Syntax check
-        run: for f in server.js state.js focus.js guards.js usage.js liveness.js; do node --check "$f"; done
+        run: for f in server.js state.js focus.js guards.js usage.js liveness.js channel/fleet-channel.js public/js/*.js public/js/*/*.js; do node --check "$f"; done
       - name: Unit tests
         run: node --test

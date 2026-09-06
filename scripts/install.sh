@@ -104,22 +104,40 @@ if (existsSync(settingsPath)) {
   copyFileSync(settingsPath, `${settingsPath}.bak`);
 }
 
+// Команду хука Claude Code запускает через shell, поэтому путь в кавычках: пробел в пути
+// репозитория иначе ломает каждый вызов инструмента во всех сессиях. Прежние установки
+// писали путь голым - такие записи переписываем на месте, а не дублируем.
+const command = `"${hookPath.replaceAll('"', '\\"')}"`;
+const isMine = (h) => h?.command === command || h?.command === hookPath;
+
 settings.hooks ??= {};
 let added = 0;
+let migrated = 0;
 for (const [event, matcher] of EVENTS) {
   settings.hooks[event] ??= [];
-  const already = settings.hooks[event].some((group) =>
-    (group?.hooks ?? []).some((h) => h?.command === hookPath),
-  );
+  let already = false;
+  for (const group of settings.hooks[event]) {
+    for (const h of group?.hooks ?? []) {
+      if (!isMine(h)) continue;
+      already = true;
+      if (h.command !== command) {
+        h.command = command;
+        migrated += 1;
+      }
+    }
+  }
   if (already) continue;
-  const group = { hooks: [{ type: 'command', command: hookPath }] };
+  const group = { hooks: [{ type: 'command', command }] };
   if (matcher) group.matcher = matcher;
   settings.hooks[event].push(group);
   added += 1;
 }
 
 writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
-console.log(added ? `хуки: добавил ${added} шт. (бэкап: settings.json.bak)` : 'хуки: уже на месте');
+const report = [];
+if (added) report.push(`добавил ${added} шт.`);
+if (migrated) report.push(`взял в кавычки путь у ${migrated} шт.`);
+console.log(report.length ? `хуки: ${report.join(', ')} (бэкап: settings.json.bak)` : 'хуки: уже на месте');
 NODE
 
 # 4. Хуки Codex ---------------------------------------------------------------
