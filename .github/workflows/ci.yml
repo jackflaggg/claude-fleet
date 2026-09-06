@@ -5,15 +5,54 @@ on:
     branches: [master]
   pull_request:
 
+# новый пуш в ту же ветку снимает прежний прогон: его результат уже никому не нужен
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  syntax:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Syntax check
-        run: for f in server.js state.js focus.js guards.js usage.js liveness.js channel/fleet-channel.js public/js/*.js public/js/*/*.js; do node --check "$f"; done
-      - name: Unit tests
-        run: node --test
+      - name: node --check по всем js/mjs репозитория
+        run: git ls-files '*.js' '*.mjs' | xargs -n1 node --check
+      - name: bash -n по всем sh
+        run: git ls-files '*.sh' | xargs -n1 bash -n
+
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [22.x, 24.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # без SDK в channel/ сквозной тест канала пропускается сам, его гоняет job channel
+      - run: node --test
+
+  liveness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run verify:liveness
+
+  channel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: SDK канала (единственные зависимости в репозитории)
+        run: npm ci --prefix channel
+      - name: сквозной прогон канала по stdio против настоящего server.js
+        run: node --test test/channel.e2e.test.js
